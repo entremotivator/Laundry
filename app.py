@@ -15,11 +15,10 @@ from plotly.subplots import make_subplots
 import csv
 import io
 import hashlib
-import subprocess
-import sys
-import os
+import threading
 import time
-import tempfile
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -95,13 +94,6 @@ def generate_pdf_report_with_weasyprint(html_content, filename):
         return pdf_path
     except Exception as e:
         return f"Error generating PDF: {str(e)}"
-
-def create_vapi_client(api_key):
-    """Create VAPI client using vapi_python library"""
-    try:
-        return Vapi(api_key=api_key)
-    except Exception as e:
-        return None
 
 def process_dataframe_with_pandas(data):
     """Use pandas for advanced data processing"""
@@ -211,6 +203,133 @@ AGENT_TYPES = {
     "Care Coordinator": "Schedules medical appointments, answers health questions, and coordinates patient services with HIPAA compliance.",
     "Feedback Gatherer": "Conducts surveys, collects customer feedback, and gathers market research with high completion rates."
 }
+
+# --- VAPI CALL MANAGEMENT ---
+class VAPICallManager:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.vapi_client = None
+        self.current_call = None
+        self.call_thread = None
+        self.is_calling = False
+        self.call_logs = []
+        self.call_history = []
+        
+    def initialize_client(self):
+        """Initialize VAPI client"""
+        try:
+            self.vapi_client = Vapi(api_key=self.api_key)
+            return True, "VAPI client initialized successfully"
+        except Exception as e:
+            return False, f"Failed to initialize VAPI client: {str(e)}"
+    
+    def start_call(self, assistant_id, overrides=None, phone_number=None):
+        """Start a VAPI call using native features"""
+        try:
+            if self.is_calling:
+                return False, "A call is already in progress"
+            
+            if not self.vapi_client:
+                success, msg = self.initialize_client()
+                if not success:
+                    return False, msg
+            
+            # Prepare call parameters
+            call_params = {
+                "assistant_id": assistant_id
+            }
+            
+            if overrides:
+                call_params["assistant_overrides"] = overrides
+            
+            if phone_number:
+                call_params["customer"] = {"number": phone_number}
+            
+            # Start the call
+            self.current_call = self.vapi_client.start(**call_params)
+            self.is_calling = True
+            
+            # Add to call history
+            call_record = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'assistant_id': assistant_id,
+                'status': 'started',
+                'call_id': getattr(self.current_call, 'id', 'unknown'),
+                'phone_number': phone_number
+            }
+            self.call_history.append(call_record)
+            
+            # Start monitoring thread
+            self.call_thread = threading.Thread(target=self._monitor_call, daemon=True)
+            self.call_thread.start()
+            
+            return True, f"Call started successfully. Call ID: {getattr(self.current_call, 'id', 'unknown')}"
+            
+        except Exception as e:
+            self.is_calling = False
+            error_msg = f"Failed to start call: {str(e)}"
+            self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: ERROR - {error_msg}")
+            return False, error_msg
+    
+    def stop_call(self):
+        """Stop the current VAPI call"""
+        try:
+            if not self.is_calling:
+                return False, "No active call to stop"
+            
+            if self.vapi_client and self.current_call:
+                self.vapi_client.stop()
+                self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: Call stopped by user")
+            
+            self.is_calling = False
+            self.current_call = None
+            
+            # Update call history
+            if self.call_history:
+                self.call_history[-1]['status'] = 'stopped'
+                self.call_history[-1]['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            return True, "Call stopped successfully"
+            
+        except Exception as e:
+            self.is_calling = False
+            self.current_call = None
+            error_msg = f"Error stopping call: {str(e)}"
+            self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: ERROR - {error_msg}")
+            return False, error_msg
+    
+    def _monitor_call(self):
+        """Monitor call status in background thread"""
+        try:
+            while self.is_calling and self.current_call:
+                # Add periodic status updates
+                self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: Call is active...")
+                time.sleep(10)  # Check every 10 seconds
+                
+                # You can add more sophisticated monitoring here
+                # such as checking call status via VAPI API
+                
+        except Exception as e:
+            self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: Monitor error - {str(e)}")
+        finally:
+            if self.is_calling:
+                self.is_calling = False
+                if self.call_history:
+                    self.call_history[-1]['status'] = 'ended'
+                    self.call_history[-1]['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    def get_call_status(self):
+        """Get current call status"""
+        return {
+            'is_calling': self.is_calling,
+            'call_id': getattr(self.current_call, 'id', None) if self.current_call else None,
+            'logs': self.call_logs[-20:],  # Last 20 log entries
+            'history': self.call_history
+        }
+    
+    def clear_logs(self):
+        """Clear call logs"""
+        self.call_logs = []
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -329,206 +448,21 @@ def fix_dataframe_types(df):
     
     return df
 
-# --- CALL CENTER FUNCTIONS ---
-def create_vapi_caller_script():
-    script_content = '''
-import sys
-import json
-import time
-from vapi_python import Vapi
-import signal
-import os
-
-def signal_handler(signum, frame):
-    print("Call interrupted by user")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
-
-def main():
-    try:
-        # Read configuration from command line arguments
-        if len(sys.argv) != 2:
-            print("Usage: python vapi_caller.py <config_json>")
-            sys.exit(1)
-        
-        config = json.loads(sys.argv[1])
-        api_key = config["api_key"]
-        assistant_id = config["assistant_id"]
-        overrides = config.get("overrides", {})
-        
-        print(f"Initializing VAPI with assistant: {assistant_id}")
-        
-        # Initialize VAPI in isolated process
-        vapi = Vapi(api_key=api_key)
-        
-        print("Starting call...")
-        call_response = vapi.start(
-            assistant_id=assistant_id,
-            assistant_overrides=overrides
-        )
-        
-        call_id = getattr(call_response, 'id', 'unknown')
-        print(f"Call started successfully. Call ID: {call_id}")
-        
-        # Keep the process alive and monitor the call
-        print("Call is active. Press Ctrl+C to stop.")
-        
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("Stopping call...")
-            try:
-                vapi.stop()
-                print("Call stopped successfully")
-            except Exception as e:
-                print(f"Error stopping call: {e}")
-        
-    except Exception as e:
-        print(f"Error in VAPI caller: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
-'''
-    
-    # Write script to temporary file
-    script_path = os.path.join(tempfile.gettempdir(), "vapi_caller.py")
-    with open(script_path, "w") as f:
-        f.write(script_content)
-    
-    return script_path
-
-def start_call_isolated(api_key, assistant_id, overrides=None):
-    try:
-        # Kill any existing process
-        if st.session_state.current_process:
-            try:
-                st.session_state.current_process.terminate()
-                st.session_state.current_process.wait(timeout=5)
-            except:
-                try:
-                    st.session_state.current_process.kill()
-                except:
-                    pass
-            st.session_state.current_process = None
-        
-        # Create the caller script
-        script_path = create_vapi_caller_script()
-        
-        # Prepare configuration
-        config = {
-            "api_key": api_key,
-            "assistant_id": assistant_id,
-            "overrides": overrides or {}
-        }
-        
-        config_json = json.dumps(config)
-        
-        # Start the isolated process
-        process = subprocess.Popen(
-            [sys.executable, script_path, config_json],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
-        
-        st.session_state.current_process = process
-        st.session_state.call_active = True
-        st.session_state.last_error = None
-        
-        # Add to call history
-        st.session_state.call_history.append({
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'assistant_id': assistant_id,
-            'status': 'started',
-            'process_id': process.pid
-        })
-        
-        return True, f"Call started in isolated process (PID: {process.pid})"
-        
-    except Exception as e:
-        error_msg = f"Failed to start isolated call: {str(e)}"
-        st.session_state.last_error = error_msg
-        st.session_state.call_active = False
-        return False, error_msg
-
-def stop_call_isolated():
-    try:
-        if st.session_state.current_process:
-            # Send interrupt signal to gracefully stop the call
-            st.session_state.current_process.terminate()
-            
-            # Wait for process to end
-            try:
-                st.session_state.current_process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                # Force kill if it doesn't respond
-                st.session_state.current_process.kill()
-                st.session_state.current_process.wait()
-            
-            st.session_state.current_process = None
-        
-        st.session_state.call_active = False
-        st.session_state.last_error = None
-        
-        # Update call history
-        if st.session_state.call_history:
-            st.session_state.call_history[-1]['status'] = 'stopped'
-        
-        return True, "Call stopped successfully"
-        
-    except Exception as e:
-        error_msg = f"Error stopping call: {str(e)}"
-        st.session_state.last_error = error_msg
-        # Force reset state
-        st.session_state.call_active = False
-        st.session_state.current_process = None
-        return False, error_msg
-
-def check_call_status():
-    if st.session_state.current_process:
-        poll_result = st.session_state.current_process.poll()
-        if poll_result is not None:
-            # Process has ended
-            st.session_state.call_active = False
-            st.session_state.current_process = None
-            
-            # Update call history
-            if st.session_state.call_history:
-                st.session_state.call_history[-1]['status'] = 'ended'
-            
-            return False, f"Call process ended with code: {poll_result}"
-    
-    return st.session_state.call_active, "Call is active"
-
 # --- INITIALIZE SESSION STATE ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user_info' not in st.session_state:
     st.session_state.user_info = {}
 
-# Call center session state initialization
-def initialize_call_center_session_state():
-    if "call_active" not in st.session_state:
-        st.session_state.call_active = False
-    if "call_history" not in st.session_state:
-        st.session_state.call_history = []
-    if "current_process" not in st.session_state:
-        st.session_state.current_process = None
+# Initialize VAPI call manager
+def initialize_vapi_session_state():
+    if "vapi_manager" not in st.session_state:
+        st.session_state.vapi_manager = None
     if "show_descriptions" not in st.session_state:
         st.session_state.show_descriptions = False
-    if "last_error" not in st.session_state:
-        st.session_state.last_error = None
-    if "call_logs" not in st.session_state:
-        st.session_state.call_logs = []
 
-# Initialize call center session state
-initialize_call_center_session_state()
+# Initialize VAPI session state
+initialize_vapi_session_state()
 
 # --- LOGIN PAGE ---
 if not st.session_state.logged_in:
@@ -623,25 +557,15 @@ else:
     # --- SIDEBAR CALL STATUS ---
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📞 Call Center Status")
-    call_active, status_msg = check_call_status()
-    st.sidebar.write(f"**Call Active:** {'✅ Yes' if call_active else '❌ No'}")
-    st.sidebar.write(f"**Total Calls:** {len(st.session_state.call_history)}")
     
-    if st.session_state.current_process:
-        st.sidebar.write(f"**Process ID:** {st.session_state.current_process.pid}")
-    
-    # Emergency controls
-    st.sidebar.subheader("🚨 Emergency Controls")
-    if st.sidebar.button("🔄 Reset Call System"):
-        if st.session_state.current_process:
-            try:
-                st.session_state.current_process.kill()
-            except:
-                pass
-        st.session_state.call_active = False
-        st.session_state.current_process = None
-        st.session_state.call_logs = []
-        st.sidebar.success("Call system reset")
+    if st.session_state.vapi_manager:
+        status = st.session_state.vapi_manager.get_call_status()
+        st.sidebar.write(f"**Call Active:** {'✅ Yes' if status['is_calling'] else '❌ No'}")
+        st.sidebar.write(f"**Total Calls:** {len(status['history'])}")
+        if status['call_id']:
+            st.sidebar.write(f"**Call ID:** {status['call_id']}")
+    else:
+        st.sidebar.write("**VAPI Manager:** Not initialized")
     
     # --- TAB LAYOUT ---
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
@@ -767,7 +691,7 @@ else:
                     ''', unsafe_allow_html=True)
                 
                 with col4:
-                    total_calls = len(st.session_state.call_history)
+                    total_calls = len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0
                     st.markdown(f'''
                     <div class="metric-card">
                         <h3>📞 Total Calls</h3>
@@ -776,20 +700,22 @@ else:
                     ''', unsafe_allow_html=True)
                 
                 # Call status indicator
-                if st.session_state.call_active:
-                    st.markdown(f'''
-                    <div class="call-status-active">
-                        <h3>🟢 Call Currently Active</h3>
-                        <p>Process ID: {st.session_state.current_process.pid if st.session_state.current_process else 'Unknown'}</p>
-                    </div>
-                    ''', unsafe_allow_html=True)
-                else:
-                    st.markdown('''
-                    <div class="call-status-inactive">
-                        <h3>🔴 No Active Calls</h3>
-                        <p>Ready to initiate new calls</p>
-                    </div>
-                    ''', unsafe_allow_html=True)
+                if st.session_state.vapi_manager:
+                    status = st.session_state.vapi_manager.get_call_status()
+                    if status['is_calling']:
+                        st.markdown(f'''
+                        <div class="call-status-active">
+                            <h3>🟢 Call Currently Active</h3>
+                            <p>Call ID: {status['call_id'] or 'Unknown'}</p>
+                        </div>
+                        ''', unsafe_allow_html=True)
+                    else:
+                        st.markdown('''
+                        <div class="call-status-inactive">
+                            <h3>🔴 No Active Calls</h3>
+                            <p>Ready to initiate new calls</p>
+                        </div>
+                        ''', unsafe_allow_html=True)
                 
                 # Team overview for current user
                 st.subheader(f"👥 Your Team: {st.session_state.user_info['team']}")
@@ -1150,67 +1076,56 @@ else:
                     with st.chat_message("assistant"):
                         st.markdown(bot_response)
             
-            # --- ADVANCED CALL CENTER TAB ---
+            # --- IMPROVED CALL CENTER TAB ---
             with tab8:
-                st.subheader("📞 AI Agent Caller - Process Isolated")
+                st.subheader("📞 AI Agent Caller - Native VAPI Integration")
                 
                 # Get API key from secrets
                 try:
                     api_key = st.secrets["VAPI_API_KEY"]
                     st.success("✅ VAPI API Key loaded from secrets")
+                    
+                    # Initialize VAPI manager if not exists
+                    if not st.session_state.vapi_manager:
+                        st.session_state.vapi_manager = VAPICallManager(api_key)
+                        success, msg = st.session_state.vapi_manager.initialize_client()
+                        if success:
+                            st.success(f"✅ {msg}")
+                        else:
+                            st.error(f"❌ {msg}")
+                    
                 except KeyError:
                     st.error("❌ VAPI_API_KEY not found in secrets. Please add it to your Streamlit secrets.")
                     st.info("Add this to your Streamlit app secrets: `VAPI_API_KEY = 'your_api_key_here'`")
                     api_key = None
                 
-                if api_key:
+                if api_key and st.session_state.vapi_manager:
                     # Configuration section
                     col1, col2 = st.columns([2, 1])
                     
                     with col2:
                         # Status information
                         st.subheader("📊 Status")
-                        call_active, status_msg = check_call_status()
-                        st.write(f"**Call Active:** {'✅ Yes' if call_active else '❌ No'}")
-                        st.write(f"**Total Calls:** {len(st.session_state.call_history)}")
+                        status = st.session_state.vapi_manager.get_call_status()
+                        st.write(f"**Call Active:** {'✅ Yes' if status['is_calling'] else '❌ No'}")
+                        st.write(f"**Total Calls:** {len(status['history'])}")
                         
-                        if st.session_state.current_process:
-                            st.write(f"**Process ID:** {st.session_state.current_process.pid}")
-                        
-                        if st.session_state.last_error:
-                            st.error(f"**Last Error:** {st.session_state.last_error}")
+                        if status['call_id']:
+                            st.write(f"**Call ID:** {status['call_id']}")
                     
-                    # Emergency controls
-                    st.subheader("🚨 Emergency Controls")
+                    # Controls
+                    st.subheader("🎛️ Controls")
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        if st.button("🔄 Reset All", help="Reset all session data"):
-                            if st.session_state.current_process:
-                                try:
-                                    st.session_state.current_process.kill()
-                                except:
-                                    pass
-                            # Reset only call center related session state
-                            st.session_state.call_active = False
-                            st.session_state.call_history = []
-                            st.session_state.current_process = None
-                            st.session_state.show_descriptions = False
-                            st.session_state.last_error = None
-                            st.session_state.call_logs = []
-                            st.success("Call center reset!")
+                        if st.button("🔄 Refresh Status"):
                             st.rerun()
                     
                     with col2:
-                        if st.button("💀 Force Kill Process", help="Force kill the current call process"):
-                            if st.session_state.current_process:
-                                try:
-                                    st.session_state.current_process.kill()
-                                    st.session_state.current_process = None
-                                    st.session_state.call_active = False
-                                    st.success("Process killed")
-                                except Exception as e:
-                                    st.error(f"Error killing process: {e}")
+                        if st.button("🧹 Clear Logs"):
+                            if st.session_state.vapi_manager:
+                                st.session_state.vapi_manager.clear_logs()
+                                st.success("Logs cleared!")
                     
                     with col3:
                         if st.button("ℹ️ Toggle Agent Types"):
@@ -1253,56 +1168,35 @@ else:
                     
                     with tab_history:
                         st.subheader("📞 Call History")
-                        if st.session_state.call_history:
-                            for i, call in enumerate(reversed(st.session_state.call_history[-10:])):
+                        status = st.session_state.vapi_manager.get_call_status()
+                        if status['history']:
+                            for i, call in enumerate(reversed(status['history'][-10:])):
                                 status_icon = {"started": "🟡", "stopped": "✅", "ended": "🔴"}.get(call['status'], "❓")
                                 st.write(f"{status_icon} **{call['timestamp']}** - {call['assistant_id']} ({call['status']})")
-                                if 'process_id' in call:
-                                    st.caption(f"Process ID: {call['process_id']}")
+                                if 'call_id' in call:
+                                    st.caption(f"Call ID: {call['call_id']}")
+                                if 'phone_number' in call and call['phone_number']:
+                                    st.caption(f"Phone: {call['phone_number']}")
                         else:
                             st.info("No calls made yet.")
                     
                     with tab_logs:
-                        st.subheader("📝 Live Process Output")
-                        if st.session_state.current_process:
-                            if st.button("🔄 Refresh Logs"):
-                                pass  # Just refresh the page
-                            
-                            # Try to read process output (cloud-compatible)
-                            try:
-                                # Check if process is still running
-                                if st.session_state.current_process.poll() is None:
-                                    # Process is still running, try to read output
-                                    try:
-                                        # Use a more cloud-compatible approach
-                                        import fcntl
-                                        import os
-                                        fd = st.session_state.current_process.stdout.fileno()
-                                        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                                        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-                                        output = st.session_state.current_process.stdout.read()
-                                        if output:
-                                            st.session_state.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: {output.strip()}")
-                                    except:
-                                        # Fallback for cloud environments
-                                        pass
-                            except:
-                                pass
-                            
-                            # Display logs
-                            if st.session_state.call_logs:
-                                for log in st.session_state.call_logs[-20:]:  # Show last 20 lines
-                                    st.text(log)
+                        st.subheader("📝 Live Call Logs")
+                        status = st.session_state.vapi_manager.get_call_status()
+                        if status['logs']:
+                            for log in status['logs']:
+                                st.text(log)
                         else:
-                            st.info("No active call process.")
+                            st.info("No logs available.")
                     
                     # User Info
-                    st.subheader("🙋 Your Information")
+                    st.subheader("🙋 Call Configuration")
                     col1, col2 = st.columns(2)
                     with col1:
                         user_name = st.text_input("Your Name (for personalized greeting):", placeholder="Enter your name")
+                        phone_number = st.text_input("Phone Number to Call:", placeholder="+1234567890")
                     with col2:
-                        user_phone = st.text_input("Your Phone Number (optional):", placeholder="+1234567890")
+                        additional_context = st.text_area("Additional Context:", placeholder="Any specific information for the call")
                     
                     # Select Agent to Call
                     if agent_configs:
@@ -1329,69 +1223,77 @@ else:
                     st.subheader("📞 Call Controls")
                     
                     if selected_agent:
+                        status = st.session_state.vapi_manager.get_call_status()
+                        
                         col1, col2, col3 = st.columns(3)
                         
                         with col1:
-                            start_disabled = st.session_state.call_active
+                            start_disabled = status['is_calling']
                             if st.button("▶️ Start Call", disabled=start_disabled, use_container_width=True):
                                 overrides = {}
                                 if user_name:
                                     overrides["variableValues"] = {"name": user_name}
+                                if additional_context:
+                                    overrides["context"] = additional_context
                                 
-                                # Clear previous logs
-                                st.session_state.call_logs = []
-                                
-                                success, message = start_call_isolated(api_key, selected_agent["id"], overrides)
+                                success, message = st.session_state.vapi_manager.start_call(
+                                    selected_agent["id"], 
+                                    overrides, 
+                                    phone_number if phone_number else None
+                                )
                                 if success:
                                     st.success(f"📞 {message}")
                                     st.balloons()
-                                    time.sleep(1)  # Brief pause before rerun
+                                    time.sleep(1)
                                     st.rerun()
                                 else:
                                     st.error(f"❌ {message}")
                         
                         with col2:
-                            stop_disabled = not st.session_state.call_active
+                            stop_disabled = not status['is_calling']
                             if st.button("⛔ Stop Call", disabled=stop_disabled, use_container_width=True):
-                                success, message = stop_call_isolated()
+                                success, message = st.session_state.vapi_manager.stop_call()
                                 if success:
                                     st.success(f"📴 {message}")
-                                    time.sleep(1)  # Brief pause before rerun
+                                    time.sleep(1)
                                     st.rerun()
                                 else:
                                     st.error(f"❌ {message}")
                         
                         with col3:
                             if st.button("🔄 Check Status", use_container_width=True):
-                                active, msg = check_call_status()
-                                if active:
-                                    st.success(f"✅ {msg}")
+                                status = st.session_state.vapi_manager.get_call_status()
+                                if status['is_calling']:
+                                    st.success(f"✅ Call is active (ID: {status['call_id']})")
                                 else:
-                                    st.info(f"ℹ️ {msg}")
+                                    st.info("ℹ️ No active call")
                         
                         # Call status indicator
-                        if st.session_state.call_active:
-                            st.success("🟢 **Call is currently active in isolated process**")
-                            if st.session_state.current_process:
-                                st.info(f"Process ID: {st.session_state.current_process.pid}")
+                        if status['is_calling']:
+                            st.success("🟢 **Call is currently active using native VAPI integration**")
+                            if status['call_id']:
+                                st.info(f"Call ID: {status['call_id']}")
                         else:
                             st.info("🔴 **No active call**")
                     
-                    # Process Isolation Benefits
+                    # Native VAPI Benefits
                     st.markdown("---")
-                    st.subheader("💡 Process Isolation Benefits")
+                    st.subheader("💡 Native VAPI Integration Benefits")
                     st.markdown("""
-                    - **🛡️ Crash Protection**: Each call runs in its own process
-                    - **🔄 Clean State**: No context conflicts between calls  
-                    - **🚨 Force Kill**: Emergency process termination available
-                    - **📊 Live Monitoring**: Real-time process status and logs
-                    - **♻️ Unlimited Calls**: Make as many calls as needed without restart
+                    - **🚀 Direct Integration**: Uses vapi_python library directly
+                    - **🔄 Stable Connections**: No subprocess management issues
+                    - **📊 Real-time Monitoring**: Native call status tracking
+                    - **🛡️ Reliable State**: Proper session state management
+                    - **⚡ Better Performance**: Eliminates process overhead
+                    - **🎯 Full VAPI Features**: Access to all native VAPI capabilities
                     """)
                 
-                # Auto-refresh for live updates
-                if st.session_state.call_active:
-                    time.sleep(2)
-                    st.rerun()
+                # Auto-refresh for live updates (less aggressive)
+                if st.session_state.vapi_manager:
+                    status = st.session_state.vapi_manager.get_call_status()
+                    if status['is_calling']:
+                        time.sleep(5)  # Reduced from 2 seconds to 5 seconds
+                        st.rerun()
             
             # --- ANALYTICS TAB ---
             with tab9:
@@ -1418,7 +1320,7 @@ else:
                     ''', unsafe_allow_html=True)
                 
                 with col3:
-                    total_ai_calls = len(st.session_state.call_history)
+                    total_ai_calls = len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0
                     st.markdown(f'''
                     <div class="metric-card">
                         <h3>🤖 AI Calls</h3>
@@ -1442,38 +1344,40 @@ else:
                 # Call center analytics
                 st.subheader("📞 Call Center Analytics")
                 
-                if st.session_state.call_history:
-                    # Advanced call analytics
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # Calls by user
-                        user_calls = {}
-                        for call in st.session_state.call_history:
-                            user = call.get('initiated_by', 'Unknown')
-                            user_calls[user] = user_calls.get(user, 0) + 1
+                if st.session_state.vapi_manager:
+                    status = st.session_state.vapi_manager.get_call_status()
+                    if status['history']:
+                        # Advanced call analytics
+                        col1, col2 = st.columns(2)
                         
-                        fig = px.bar(
-                            x=list(user_calls.keys()), 
-                            y=list(user_calls.values()),
-                            title="Calls by User",
-                            labels={'x': 'User', 'y': 'Number of Calls'}
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
-                        # Call status distribution
-                        status_counts = {}
-                        for call in st.session_state.call_history:
-                            status = call.get('status', 'unknown')
-                            status_counts[status] = status_counts.get(status, 0) + 1
+                        with col1:
+                            # Call status distribution
+                            status_counts = {}
+                            for call in status['history']:
+                                call_status = call.get('status', 'unknown')
+                                status_counts[call_status] = status_counts.get(call_status, 0) + 1
+                            
+                            fig = px.pie(
+                                values=list(status_counts.values()),
+                                names=list(status_counts.keys()),
+                                title="Call Status Distribution"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
                         
-                        fig = px.pie(
-                            values=list(status_counts.values()),
-                            names=list(status_counts.keys()),
-                            title="Call Status Distribution"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                        with col2:
+                            # Calls over time
+                            call_dates = [call['timestamp'][:10] for call in status['history']]
+                            date_counts = {}
+                            for date in call_dates:
+                                date_counts[date] = date_counts.get(date, 0) + 1
+                            
+                            fig = px.bar(
+                                x=list(date_counts.keys()), 
+                                y=list(date_counts.values()),
+                                title="Calls by Date",
+                                labels={'x': 'Date', 'y': 'Number of Calls'}
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
                 
                 # Team performance analytics
                 st.subheader("📈 Team Performance")
@@ -1506,7 +1410,7 @@ else:
                             "teams": TEAM_STRUCTURE,
                             "call_center_agents": CALL_CENTER_AGENTS,
                             "ai_agents": STATIC_AGENTS,
-                            "call_history": st.session_state.call_history,
+                            "call_history": st.session_state.vapi_manager.get_call_status()['history'] if st.session_state.vapi_manager else [],
                             "exported_by": st.session_state.user_info['name'],
                             "export_time": datetime.now().isoformat()
                         }
@@ -1526,11 +1430,11 @@ else:
                             "total_customers": len(customers_df),
                             "total_invoices": len(invoices_df),
                             "total_team_members": total_team_members,
-                            "total_ai_calls": len(st.session_state.call_history),
+                            "total_ai_calls": len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0,
                             "team_breakdown": team_performance_data,
                             "call_analytics": {
-                                "active_call": st.session_state.call_active,
-                                "total_calls": len(st.session_state.call_history)
+                                "active_call": st.session_state.vapi_manager.get_call_status()['is_calling'] if st.session_state.vapi_manager else False,
+                                "total_calls": len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0
                             }
                         }
                         
@@ -1544,10 +1448,10 @@ else:
                 with col3:
                     if st.button("📞 Export Call Data"):
                         call_data = {
-                            "call_history": st.session_state.call_history,
+                            "call_history": st.session_state.vapi_manager.get_call_status()['history'] if st.session_state.vapi_manager else [],
                             "ai_agents": STATIC_AGENTS,
                             "human_agents": CALL_CENTER_AGENTS,
-                            "current_call_active": st.session_state.call_active,
+                            "current_call_active": st.session_state.vapi_manager.get_call_status()['is_calling'] if st.session_state.vapi_manager else False,
                             "exported_by": st.session_state.user_info['name'],
                             "export_time": datetime.now().isoformat()
                         }
@@ -1590,11 +1494,11 @@ else:
             </div>
             
             <div style="background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
-                <h4>🚀 New: Advanced Call Center Features</h4>
-                <p>✨ AI-powered customer calls with VAPI integration</p>
-                <p>🎯 Customer context integration for personalized calls</p>
-                <p>📊 Real-time call monitoring and analytics</p>
-                <p>🔄 Seamless integration with CRM customer database</p>
+                <h4>🚀 New: Native VAPI Integration</h4>
+                <p>✨ Direct vapi_python library integration for stable calls</p>
+                <p>🎯 Improved session state management</p>
+                <p>📊 Real-time call monitoring without subprocess issues</p>
+                <p>🔄 Reliable call management with full VAPI features</p>
             </div>
         </div>
         """.format(
