@@ -102,6 +102,16 @@ STATIC_AGENTS = {
     }
 }
 
+# Define agent type descriptions for call center
+AGENT_TYPES = {
+    "Customer Support Specialist": "Resolves product issues, answers questions, and ensures satisfying customer experiences with technical knowledge and empathy.",
+    "Lead Qualification Specialist": "Identifies qualified prospects, understands business challenges, and connects them with appropriate sales representatives.",
+    "Appointment Scheduler": "Efficiently books, confirms, reschedules, or cancels appointments while providing clear service information.",
+    "Info Collector": "Gathers accurate and complete information from customers while ensuring data quality and regulatory compliance.",
+    "Care Coordinator": "Schedules medical appointments, answers health questions, and coordinates patient services with HIPAA compliance.",
+    "Feedback Gatherer": "Conducts surveys, collects customer feedback, and gathers market research with high completion rates."
+}
+
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
@@ -238,30 +248,33 @@ signal.signal(signal.SIGINT, signal_handler)
 
 def main():
     try:
+        # Read configuration from command line arguments
         if len(sys.argv) != 2:
             print("Usage: python vapi_caller.py <config_json>")
             sys.exit(1)
-       
+        
         config = json.loads(sys.argv[1])
         api_key = config["api_key"]
         assistant_id = config["assistant_id"]
         overrides = config.get("overrides", {})
-       
+        
         print(f"Initializing VAPI with assistant: {assistant_id}")
-       
+        
+        # Initialize VAPI in isolated process
         vapi = Vapi(api_key=api_key)
-       
+        
         print("Starting call...")
         call_response = vapi.start(
             assistant_id=assistant_id,
             assistant_overrides=overrides
         )
-       
+        
         call_id = getattr(call_response, 'id', 'unknown')
         print(f"Call started successfully. Call ID: {call_id}")
-       
+        
+        # Keep the process alive and monitor the call
         print("Call is active. Press Ctrl+C to stop.")
-       
+        
         try:
             while True:
                 time.sleep(1)
@@ -272,7 +285,7 @@ def main():
                 print("Call stopped successfully")
             except Exception as e:
                 print(f"Error stopping call: {e}")
-       
+        
     except Exception as e:
         print(f"Error in VAPI caller: {e}")
         sys.exit(1)
@@ -280,21 +293,16 @@ def main():
 if __name__ == "__main__":
     main()
 '''
-   
+    
+    # Write script to temporary file
     script_path = os.path.join(tempfile.gettempdir(), "vapi_caller.py")
     with open(script_path, "w") as f:
         f.write(script_content)
-   
+    
     return script_path
 
-def start_call_isolated(assistant_id, user_name=None):
+def start_call_isolated(api_key, assistant_id, overrides=None):
     try:
-        # Get API key from secrets
-        try:
-            api_key = st.secrets["VAPI_API_KEY"]
-        except KeyError:
-            return False, "VAPI_API_KEY not found in secrets. Please add it to your .streamlit/secrets.toml file."
-        
         # Kill any existing process
         if st.session_state.current_process:
             try:
@@ -306,23 +314,19 @@ def start_call_isolated(assistant_id, user_name=None):
                 except:
                     pass
             st.session_state.current_process = None
-       
+        
         # Create the caller script
         script_path = create_vapi_caller_script()
-       
+        
         # Prepare configuration
         config = {
             "api_key": api_key,
             "assistant_id": assistant_id,
-            "overrides": {}
+            "overrides": overrides or {}
         }
-       
-        # Add user context
-        if user_name:
-            config["overrides"]["variableValues"] = {"name": user_name}
-       
+        
         config_json = json.dumps(config)
-       
+        
         # Start the isolated process
         process = subprocess.Popen(
             [sys.executable, script_path, config_json],
@@ -332,66 +336,74 @@ def start_call_isolated(assistant_id, user_name=None):
             bufsize=1,
             universal_newlines=True
         )
-       
+        
         st.session_state.current_process = process
         st.session_state.call_active = True
-        st.session_state.call_logs = []
-       
+        st.session_state.last_error = None
+        
         # Add to call history
         st.session_state.call_history.append({
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'assistant_id': assistant_id,
-            'user_name': user_name,
             'status': 'started',
-            'process_id': process.pid,
-            'initiated_by': st.session_state.user_info['name']
+            'process_id': process.pid
         })
-       
-        return True, f"Call started (PID: {process.pid})"
-       
+        
+        return True, f"Call started in isolated process (PID: {process.pid})"
+        
     except Exception as e:
+        error_msg = f"Failed to start isolated call: {str(e)}"
+        st.session_state.last_error = error_msg
         st.session_state.call_active = False
-        return False, f"Failed to start call: {str(e)}"
+        return False, error_msg
 
 def stop_call_isolated():
     try:
         if st.session_state.current_process:
+            # Send interrupt signal to gracefully stop the call
             st.session_state.current_process.terminate()
-           
+            
+            # Wait for process to end
             try:
                 st.session_state.current_process.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                # Force kill if it doesn't respond
                 st.session_state.current_process.kill()
                 st.session_state.current_process.wait()
-           
+            
             st.session_state.current_process = None
-       
+        
         st.session_state.call_active = False
-       
+        st.session_state.last_error = None
+        
         # Update call history
         if st.session_state.call_history:
             st.session_state.call_history[-1]['status'] = 'stopped'
-            st.session_state.call_history[-1]['ended_by'] = st.session_state.user_info['name']
-       
+        
         return True, "Call stopped successfully"
-       
+        
     except Exception as e:
+        error_msg = f"Error stopping call: {str(e)}"
+        st.session_state.last_error = error_msg
+        # Force reset state
         st.session_state.call_active = False
         st.session_state.current_process = None
-        return False, f"Error stopping call: {str(e)}"
+        return False, error_msg
 
 def check_call_status():
     if st.session_state.current_process:
         poll_result = st.session_state.current_process.poll()
         if poll_result is not None:
+            # Process has ended
             st.session_state.call_active = False
             st.session_state.current_process = None
-           
+            
+            # Update call history
             if st.session_state.call_history:
                 st.session_state.call_history[-1]['status'] = 'ended'
-           
+            
             return False, f"Call process ended with code: {poll_result}"
-   
+    
     return st.session_state.call_active, "Call is active"
 
 # --- INITIALIZE SESSION STATE ---
@@ -400,15 +412,23 @@ if 'logged_in' not in st.session_state:
 if 'user_info' not in st.session_state:
     st.session_state.user_info = {}
 
-# Call center session state
-if "call_active" not in st.session_state:
-    st.session_state.call_active = False
-if "call_history" not in st.session_state:
-    st.session_state.call_history = []
-if "current_process" not in st.session_state:
-    st.session_state.current_process = None
-if "call_logs" not in st.session_state:
-    st.session_state.call_logs = []
+# Call center session state initialization
+def initialize_call_center_session_state():
+    if "call_active" not in st.session_state:
+        st.session_state.call_active = False
+    if "call_history" not in st.session_state:
+        st.session_state.call_history = []
+    if "current_process" not in st.session_state:
+        st.session_state.current_process = None
+    if "show_descriptions" not in st.session_state:
+        st.session_state.show_descriptions = False
+    if "last_error" not in st.session_state:
+        st.session_state.last_error = None
+    if "call_logs" not in st.session_state:
+        st.session_state.call_logs = []
+
+# Initialize call center session state
+initialize_call_center_session_state()
 
 # --- LOGIN PAGE ---
 if not st.session_state.logged_in:
@@ -1032,106 +1052,236 @@ else:
             
             # --- ADVANCED CALL CENTER TAB ---
             with tab8:
-                st.subheader("📞 AI Agent Caller")
+                st.subheader("📞 AI Agent Caller - Process Isolated")
                 
-                # Call status indicator
-                call_active, status_msg = check_call_status()
-                if call_active:
-                    st.markdown(f'''
-                    <div class="call-status-active">
-                        <h3>🟢 Call Currently Active</h3>
-                        <p>Process ID: {st.session_state.current_process.pid if st.session_state.current_process else 'Unknown'}</p>
-                    </div>
-                    ''', unsafe_allow_html=True)
-                else:
-                    st.markdown('''
-                    <div class="call-status-inactive">
-                        <h3>🔴 No Active Call</h3>
-                    </div>
-                    ''', unsafe_allow_html=True)
-                
-                # Main call interface
+                # Configuration section
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
-                    st.subheader("🤖 Select Agent")
-                    
-                    # Display agent cards
-                    for agent_key, agent_info in STATIC_AGENTS.items():
-                        with st.expander(f"{agent_info['name']}", expanded=False):
-                            st.write(f"**Description:** {agent_info['description']}")
-                            st.write(f"**Agent ID:** {agent_info['id']}")
-                            
-                            # User name input (optional)
-                            user_name = st.text_input(f"Your Name (optional):", key=f"name_{agent_key}")
-                            
-                            # Call buttons
-                            col_start, col_stop = st.columns(2)
-                            
-                            with col_start:
-                                if st.button(f"📞 Call {agent_key}", key=f"call_{agent_key}", disabled=st.session_state.call_active):
-                                    success, message = start_call_isolated(agent_info["id"], user_name)
-                                    if success:
-                                        st.success(f"✅ {message}")
-                                        st.balloons()
-                                        time.sleep(1)
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ {message}")
-                            
-                            with col_stop:
-                                if st.button(f"⛔ Stop Call", key=f"stop_{agent_key}", disabled=not st.session_state.call_active):
-                                    success, message = stop_call_isolated()
-                                    if success:
-                                        st.success(f"📴 {message}")
-                                        time.sleep(1)
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ {message}")
+                    st.subheader("🔧 Configuration")
+                    api_key = st.text_input("🔑 VAPI API Key", type="password", help="Enter your VAPI API key")
                 
                 with col2:
-                    st.subheader("📞 Call History")
-                    if st.session_state.call_history:
-                        for call in reversed(st.session_state.call_history[-5:]):
-                            status_icon = {"started": "🟡", "stopped": "✅", "ended": "🔴"}.get(call['status'], "❓")
-                            st.write(f"{status_icon} {call['timestamp']}")
-                            st.caption(f"Agent: {call['assistant_id']}")
-                            st.caption(f"Status: {call['status']}")
-                            st.write("---")
-                    else:
-                        st.info("No calls made yet.")
-                
-                # Live logs
-                if st.session_state.call_active:
-                    st.subheader("📝 Live Process Output")
+                    # Status information
+                    st.subheader("📊 Status")
+                    call_active, status_msg = check_call_status()
+                    st.write(f"**Call Active:** {'✅ Yes' if call_active else '❌ No'}")
+                    st.write(f"**Total Calls:** {len(st.session_state.call_history)}")
                     
-                    # Try to read process output
                     if st.session_state.current_process:
-                        try:
-                            # Read available output
-                            output = st.session_state.current_process.stdout.readline()
-                            if output:
-                                timestamp = datetime.now().strftime('%H:%M:%S')
-                                st.session_state.call_logs.append(f"[{timestamp}] {output.strip()}")
+                        st.write(f"**Process ID:** {st.session_state.current_process.pid}")
+                    
+                    if st.session_state.last_error:
+                        st.error(f"**Last Error:** {st.session_state.last_error}")
+                
+                # Emergency controls
+                st.subheader("🚨 Emergency Controls")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("🔄 Reset All", help="Reset all session data"):
+                        if st.session_state.current_process:
+                            try:
+                                st.session_state.current_process.kill()
+                            except:
+                                pass
+                        # Reset only call center related session state
+                        st.session_state.call_active = False
+                        st.session_state.call_history = []
+                        st.session_state.current_process = None
+                        st.session_state.show_descriptions = False
+                        st.session_state.last_error = None
+                        st.session_state.call_logs = []
+                        st.success("Call center reset!")
+                        st.rerun()
+                
+                with col2:
+                    if st.button("💀 Force Kill Process", help="Force kill the current call process"):
+                        if st.session_state.current_process:
+                            try:
+                                st.session_state.current_process.kill()
+                                st.session_state.current_process = None
+                                st.session_state.call_active = False
+                                st.success("Process killed")
+                            except Exception as e:
+                                st.error(f"Error killing process: {e}")
+                
+                with col3:
+                    if st.button("ℹ️ Toggle Agent Types"):
+                        st.session_state.show_descriptions = not st.session_state.show_descriptions
+                
+                # Show Agent Type Descriptions
+                if st.session_state.show_descriptions:
+                    st.subheader("📚 Agent Type Descriptions")
+                    for role, desc in AGENT_TYPES.items():
+                        with st.expander(role):
+                            st.write(desc)
+                
+                # Main interface
+                if not api_key:
+                    st.warning("⚠️ Please enter your VAPI API key above to get started.")
+                else:
+                    # Agent Setup
+                    st.subheader("🧠 Define Your Assistants")
+                    agent_configs = []
+                    
+                    # Create tabs for better organization
+                    tab_setup, tab_history, tab_logs = st.tabs(["Assistant Setup", "Call History", "Live Logs"])
+                    
+                    with tab_setup:
+                        col1, col2 = st.columns(2)
+                        
+                        for i in range(1, 6):
+                            with col1 if i <= 2 else col2:
+                                with st.expander(f"Assistant {i} Setup", expanded=(i == 1)):
+                                    agent_id = st.text_input(f"Assistant ID", key=f"assistant_id_{i}")
+                                    agent_name = st.text_input(f"Agent Name", key=f"agent_name_{i}")
+                                    agent_type = st.selectbox(
+                                        f"Agent Type", 
+                                        options=[""] + list(AGENT_TYPES.keys()), 
+                                        key=f"agent_type_{i}"
+                                    )
+
+                                    if agent_id and agent_type:
+                                        agent_configs.append({
+                                            "id": agent_id,
+                                            "name": agent_name or f"Agent {i}",
+                                            "type": agent_type
+                                        })
+                    
+                    with tab_history:
+                        st.subheader("📞 Call History")
+                        if st.session_state.call_history:
+                            for i, call in enumerate(reversed(st.session_state.call_history[-10:])):
+                                status_icon = {"started": "🟡", "stopped": "✅", "ended": "🔴"}.get(call['status'], "❓")
+                                st.write(f"{status_icon} **{call['timestamp']}** - {call['assistant_id']} ({call['status']})")
+                                if 'process_id' in call:
+                                    st.caption(f"Process ID: {call['process_id']}")
+                        else:
+                            st.info("No calls made yet.")
+                    
+                    with tab_logs:
+                        st.subheader("📝 Live Process Output")
+                        if st.session_state.current_process:
+                            if st.button("🔄 Refresh Logs"):
+                                pass  # Just refresh the page
+                            
+                            # Try to read process output
+                            try:
+                                # Non-blocking read of process output
+                                import select
+                                if hasattr(select, 'select'):
+                                    ready, _, _ = select.select([st.session_state.current_process.stdout], [], [], 0)
+                                    if ready:
+                                        output = st.session_state.current_process.stdout.readline()
+                                        if output:
+                                            st.session_state.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: {output.strip()}")
+                            except:
+                                pass
+                            
+                            # Display logs
+                            if st.session_state.call_logs:
+                                for log in st.session_state.call_logs[-20:]:  # Show last 20 lines
+                                    st.text(log)
+                        else:
+                            st.info("No active call process.")
+                    
+                    # User Info
+                    st.subheader("🙋 Your Information")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        user_name = st.text_input("Your Name (for personalized greeting):", placeholder="Enter your name")
+                    with col2:
+                        user_phone = st.text_input("Your Phone Number (optional):", placeholder="+1234567890")
+                    
+                    # Select Agent to Call
+                    if agent_configs:
+                        st.subheader("📲 Select Assistant")
+                        agent_labels = [f"{a['name']} - {a['type']}" for a in agent_configs]
+                        selected_index = st.selectbox(
+                            "Choose Assistant to Call", 
+                            range(len(agent_configs)), 
+                            format_func=lambda i: agent_labels[i]
+                        )
+                        selected_agent = agent_configs[selected_index]
+                        
+                        # Show selected agent details
+                        with st.expander("Selected Assistant Details", expanded=True):
+                            st.write(f"**Name:** {selected_agent['name']}")
+                            st.write(f"**Type:** {selected_agent['type']}")
+                            st.write(f"**ID:** {selected_agent['id']}")
+                            st.write(f"**Description:** {AGENT_TYPES[selected_agent['type']]}")
+                    else:
+                        selected_agent = None
+                        st.warning("⚠️ Please define at least one assistant above.")
+                    
+                    # Call Controls
+                    st.subheader("📞 Call Controls")
+                    
+                    if selected_agent:
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            start_disabled = st.session_state.call_active
+                            if st.button("▶️ Start Call", disabled=start_disabled, use_container_width=True):
+                                overrides = {}
+                                if user_name:
+                                    overrides["variableValues"] = {"name": user_name}
                                 
-                                # Keep only last 10 logs
-                                if len(st.session_state.call_logs) > 10:
-                                    st.session_state.call_logs = st.session_state.call_logs[-10:]
-                        except:
-                            pass
+                                # Clear previous logs
+                                st.session_state.call_logs = []
+                                
+                                success, message = start_call_isolated(api_key, selected_agent["id"], overrides)
+                                if success:
+                                    st.success(f"📞 {message}")
+                                    st.balloons()
+                                    time.sleep(1)  # Brief pause before rerun
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {message}")
+                        
+                        with col2:
+                            stop_disabled = not st.session_state.call_active
+                            if st.button("⛔ Stop Call", disabled=stop_disabled, use_container_width=True):
+                                success, message = stop_call_isolated()
+                                if success:
+                                    st.success(f"📴 {message}")
+                                    time.sleep(1)  # Brief pause before rerun
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {message}")
+                        
+                        with col3:
+                            if st.button("🔄 Check Status", use_container_width=True):
+                                active, msg = check_call_status()
+                                if active:
+                                    st.success(f"✅ {msg}")
+                                else:
+                                    st.info(f"ℹ️ {msg}")
+                        
+                        # Call status indicator
+                        if st.session_state.call_active:
+                            st.success("🟢 **Call is currently active in isolated process**")
+                            if st.session_state.current_process:
+                                st.info(f"Process ID: {st.session_state.current_process.pid}")
+                        else:
+                            st.info("🔴 **No active call**")
                     
-                    # Display logs
-                    if st.session_state.call_logs:
-                        for log in st.session_state.call_logs:
-                            st.text(log)
-                    
-                    # Auto-refresh
+                    # Process Isolation Benefits
+                    st.markdown("---")
+                    st.subheader("💡 Process Isolation Benefits")
+                    st.markdown("""
+                    - **🛡️ Crash Protection**: Each call runs in its own process
+                    - **🔄 Clean State**: No context conflicts between calls  
+                    - **🚨 Force Kill**: Emergency process termination available
+                    - **📊 Live Monitoring**: Real-time process status and logs
+                    - **♻️ Unlimited Calls**: Make as many calls as needed without restart
+                    """)
+                
+                # Auto-refresh for live updates
+                if st.session_state.call_active:
                     time.sleep(2)
                     st.rerun()
-                
-                # Footer
-                st.markdown("---")
-                st.markdown("💡 **Instructions:** Select an agent above, optionally enter your name, and click 'Call' to start. Use 'Stop Call' or emergency controls to end the call.")
             
             # --- ANALYTICS TAB ---
             with tab9:
