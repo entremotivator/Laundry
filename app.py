@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import csv
 import io
+import hashlib
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -18,6 +19,64 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- DEMO ACCOUNTS ---
+DEMO_ACCOUNTS = {
+    "admin": {"password": "admin123", "role": "Admin", "team": "Management", "name": "John Admin"},
+    "manager1": {"password": "manager123", "role": "Manager", "team": "Operations", "name": "Sarah Manager"},
+    "agent1": {"password": "agent123", "role": "Agent", "team": "Customer Service", "name": "Mike Agent"},
+    "supervisor1": {"password": "super123", "role": "Supervisor", "team": "Quality Control", "name": "Emma Supervisor"},
+    "demo": {"password": "demo123", "role": "Demo User", "team": "Demo", "name": "Demo User"}
+}
+
+# --- TEAM STRUCTURE ---
+TEAM_STRUCTURE = {
+    "Management": {
+        "team_lead": "John Admin",
+        "members": [
+            {"name": "John Admin", "role": "Admin", "status": "Active", "login": "admin"},
+            {"name": "Lisa Director", "role": "Director", "status": "Active", "login": "director1"},
+            {"name": "Robert VP", "role": "Vice President", "status": "Active", "login": "vp1"},
+            {"name": "Maria CFO", "role": "CFO", "status": "Active", "login": "cfo1"},
+            {"name": "David CTO", "role": "CTO", "status": "Active", "login": "cto1"}
+        ]
+    },
+    "Operations": {
+        "team_lead": "Sarah Manager",
+        "members": [
+            {"name": "Sarah Manager", "role": "Operations Manager", "status": "Active", "login": "manager1"},
+            {"name": "Tom Operator", "role": "Senior Operator", "status": "Active", "login": "op1"},
+            {"name": "Jenny Coordinator", "role": "Coordinator", "status": "Active", "login": "coord1"},
+            {"name": "Paul Scheduler", "role": "Scheduler", "status": "Active", "login": "sched1"},
+            {"name": "Anna Logistics", "role": "Logistics", "status": "Active", "login": "log1"}
+        ]
+    },
+    "Customer Service": {
+        "team_lead": "Mike Agent",
+        "members": [
+            {"name": "Mike Agent", "role": "Senior Agent", "status": "Active", "login": "agent1"},
+            {"name": "Kelly Support", "role": "Support Agent", "status": "Active", "login": "support1"},
+            {"name": "Chris Helper", "role": "Customer Helper", "status": "Active", "login": "helper1"},
+            {"name": "Nina Assistant", "role": "Assistant", "status": "Active", "login": "assist1"},
+            {"name": "Ryan Specialist", "role": "Specialist", "status": "Active", "login": "spec1"}
+        ]
+    }
+}
+
+# --- HARDCODED CREDENTIALS ---
+DEFAULT_CUSTOMERS_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=392374958#gid=392374958"
+DEFAULT_N8N_WEBHOOK = "https://agentonline-u29564.vm.elestio.app/webhook/bf7aec67-cce8-4bd6-81f1-f04f84b992f7"
+HARDCODED_INVOICES_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=1234567890#gid=1234567890"
+PRICE_LIST_SHEET = "https://docs.google.com/spreadsheets/d/1WeDpcSNnfCrtx4F3bBC9osigPkzy3LXybRO6jpN7BXE/edit?usp=drivesdk"
+
+# --- CALL CENTER AGENTS ---
+CALL_CENTER_AGENTS = {
+    "agent_001": {"name": "Sarah Johnson", "status": "Available", "calls_today": 12, "team": "Customer Service"},
+    "agent_002": {"name": "Mike Chen", "status": "On Call", "calls_today": 8, "team": "Customer Service"},
+    "agent_003": {"name": "Emma Davis", "status": "Break", "calls_today": 15, "team": "Customer Service"},
+    "agent_004": {"name": "Alex Rodriguez", "status": "Available", "calls_today": 10, "team": "Operations"},
+    "agent_005": {"name": "Lisa Thompson", "status": "Training", "calls_today": 3, "team": "Operations"}
+}
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -42,7 +101,15 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0,0,0,0.2);
         text-align: center;
     }
-    .customer-card {
+    .login-container {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+        margin: 2rem 0;
+    }
+    .team-card {
         background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
         padding: 1.5rem;
         border-radius: 15px;
@@ -50,22 +117,7 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0,0,0,0.1);
         border-left: 5px solid #667eea;
     }
-    .invoice-card {
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        border-left: 5px solid #4facfe;
-    }
-    .chat-container {
-        background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-        padding: 2rem;
-        border-radius: 15px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-    }
-    .call-center-card {
+    .price-card {
         background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
         padding: 1.5rem;
         border-radius: 15px;
@@ -73,133 +125,215 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0,0,0,0.1);
         border-left: 5px solid #a8edea;
     }
-    .stTab {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border-radius: 10px;
-        padding: 0.5rem 1rem;
-        margin: 0.2rem;
-    }
-    .sidebar-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    .user-info {
+        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
         padding: 1rem;
         border-radius: 10px;
-        color: white;
+        margin: 1rem 0;
         text-align: center;
-        margin-bottom: 1rem;
+        color: #333;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAIN HEADER ---
-st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
+# --- LOGIN SYSTEM ---
+def login_user(username, password):
+    if username in DEMO_ACCOUNTS and DEMO_ACCOUNTS[username]["password"] == password:
+        return DEMO_ACCOUNTS[username]
+    return None
 
-# --- SIDEBAR AUTH JSON UPLOAD ---
-st.sidebar.markdown('<div class="sidebar-header">🔐 Authentication</div>', unsafe_allow_html=True)
-auth_file = st.sidebar.file_uploader("Upload service_account.json", type="json")
+def logout_user():
+    for key in list(st.session_state.keys()):
+        if key.startswith('user_'):
+            del st.session_state[key]
+    st.session_state.logged_in = False
 
-# --- ADDITIONAL SIDEBAR CONFIGS ---
-st.sidebar.markdown("---")
-st.sidebar.markdown('<div class="sidebar-header">⚙️ Configuration</div>', unsafe_allow_html=True)
+# --- INITIALIZE SESSION STATE ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_info' not in st.session_state:
+    st.session_state.user_info = {}
 
-# Default URLs - hardcoded but can be overridden
-DEFAULT_CUSTOMERS_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=392374958#gid=392374958"
-DEFAULT_N8N_WEBHOOK = "https://agentonline-u29564.vm.elestio.app/webhook/bf7aec67-cce8-4bd6-81f1-f04f84b992f7"
-# Hardcoded Invoice Sheet URL
-HARDCODED_INVOICES_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=1234567890#gid=1234567890"
-
-# Hardcoded Call Center Agent IDs
-CALL_CENTER_AGENTS = {
-    "agent_001": {"name": "Sarah Johnson", "status": "Available", "calls_today": 12},
-    "agent_002": {"name": "Mike Chen", "status": "On Call", "calls_today": 8},
-    "agent_003": {"name": "Emma Davis", "status": "Break", "calls_today": 15},
-    "agent_004": {"name": "Alex Rodriguez", "status": "Available", "calls_today": 10},
-    "agent_005": {"name": "Lisa Thompson", "status": "Training", "calls_today": 3}
-}
-
-# --- TAB LAYOUT ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "🏠 Dashboard", 
-    "➕ Add Customer", 
-    "📋 View All",
-    "🧾 Invoices",
-    "💬 Super Chat",
-    "📞 Call Center",
-    "📊 Analytics"
-])
-
-if auth_file:
-    try:
-        auth_json = json.load(auth_file)
-        creds = Credentials.from_service_account_info(auth_json, scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ])
-        client = gspread.authorize(creds)
-
-        # --- SHEET URLS ---
-        use_default_settings = st.sidebar.checkbox("✅ Use Default Settings", value=True)
+# --- LOGIN PAGE ---
+if not st.session_state.logged_in:
+    st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("""
+        <div class="login-container">
+            <h2>🔐 Login to CRM System</h2>
+            <p>Enter your credentials to access the system</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        if use_default_settings:
-            CUSTOMERS_SHEET_URL = DEFAULT_CUSTOMERS_SHEET
-            N8N_WEBHOOK_URL = DEFAULT_N8N_WEBHOOK
-            INVOICES_SHEET_URL = HARDCODED_INVOICES_SHEET
-            st.sidebar.success("🎯 Using default configuration")
-            st.sidebar.info("📊 Connected to main customer database")
-            st.sidebar.info("🧾 Connected to invoices database")
-            st.sidebar.info("🤖 AI chat system ready")
-        else:
-            CUSTOMERS_SHEET_URL = st.sidebar.text_input("📄 Customers Google Sheet URL", "")
-            INVOICES_SHEET_URL = st.sidebar.text_input("🧾 Invoices Google Sheet URL", HARDCODED_INVOICES_SHEET)
-            N8N_WEBHOOK_URL = st.sidebar.text_input("🔗 N8N Webhook URL", "")
+        with st.form("login_form"):
+            username = st.text_input("👤 Username")
+            password = st.text_input("🔒 Password", type="password")
+            login_button = st.form_submit_button("🚀 Login", type="primary")
             
-        # Optional API settings
-        st.sidebar.markdown("---")
-        st.sidebar.markdown('<div class="sidebar-header">🔧 Optional APIs</div>', unsafe_allow_html=True)
-        VAPI_API_KEY = st.sidebar.text_input("🔑 VAPI AI API Key (Optional)", type="password")
-        OPENAI_API_KEY = st.sidebar.text_input("🤖 OpenAI API Key (Optional)", type="password")
-        
-        if CUSTOMERS_SHEET_URL:
-            # --- LOAD CUSTOMERS DATA ---
-            try:
-                customers_sheet = client.open_by_url(CUSTOMERS_SHEET_URL)
-                customers_worksheet = customers_sheet.sheet1
-                customers_data = customers_worksheet.get_all_records()
-                customers_df = pd.DataFrame(customers_data)
-                
-                if customers_df.empty:
-                    st.sidebar.warning("📋 Customer sheet is empty")
+            if login_button:
+                user_info = login_user(username, password)
+                if user_info:
+                    st.session_state.logged_in = True
+                    st.session_state.user_info = user_info
+                    st.session_state.username = username
+                    st.success(f"✅ Welcome {user_info['name']}!")
+                    st.rerun()
                 else:
-                    st.sidebar.success(f"✅ Loaded {len(customers_df)} customers")
-                    
-            except Exception as e:
-                st.sidebar.error(f"❌ Error loading customers: {str(e)}")
-                customers_df = pd.DataFrame()  # Empty dataframe as fallback
+                    st.error("❌ Invalid credentials!")
+        
+        # Demo accounts info
+        st.markdown("---")
+        st.subheader("🎯 Demo Accounts")
+        
+        demo_col1, demo_col2 = st.columns(2)
+        
+        with demo_col1:
+            st.markdown("""
+            **👑 Admin Access:**
+            - Username: `admin`
+            - Password: `admin123`
+            
+            **👨‍💼 Manager Access:**
+            - Username: `manager1`
+            - Password: `manager123`
+            """)
+        
+        with demo_col2:
+            st.markdown("""
+            **🎧 Agent Access:**
+            - Username: `agent1`
+            - Password: `agent123`
+            
+            **🎮 Demo Access:**
+            - Username: `demo`
+            - Password: `demo123`
+            """)
 
-            # --- LOAD INVOICES DATA ---
+else:
+    # --- MAIN APPLICATION ---
+    
+    # --- HEADER WITH USER INFO ---
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div class="user-info">
+            <strong>👤 {st.session_state.user_info['name']}</strong><br>
+            <small>{st.session_state.user_info['role']} | {st.session_state.user_info['team']}</small>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        if st.button("🚪 Logout", type="secondary"):
+            logout_user()
+            st.rerun()
+    
+    # --- SIDEBAR AUTH JSON UPLOAD ---
+    st.sidebar.markdown('<div class="sidebar-header">🔐 Authentication</div>', unsafe_allow_html=True)
+    auth_file = st.sidebar.file_uploader("Upload service_account.json", type="json")
+    
+    # --- SIDEBAR USER INFO ---
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**Current User:** {st.session_state.user_info['name']}")
+    st.sidebar.markdown(f"**Role:** {st.session_state.user_info['role']}")
+    st.sidebar.markdown(f"**Team:** {st.session_state.user_info['team']}")
+    
+    # --- TAB LAYOUT ---
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "🏠 Dashboard", 
+        "➕ Add Customer", 
+        "📋 View All",
+        "🧾 Invoices",
+        "💰 Price List",
+        "👥 Team Management",
+        "💬 Super Chat",
+        "📞 Call Center",
+        "📊 Analytics"
+    ])
+    
+    if auth_file:
+        try:
+            auth_json = json.load(auth_file)
+            creds = Credentials.from_service_account_info(auth_json, scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ])
+            client = gspread.authorize(creds)
+            
+            # --- SHEET URLS ---
+            use_default_settings = st.sidebar.checkbox("✅ Use Default Settings", value=True)
+            
+            if use_default_settings:
+                CUSTOMERS_SHEET_URL = DEFAULT_CUSTOMERS_SHEET
+                N8N_WEBHOOK_URL = DEFAULT_N8N_WEBHOOK
+                INVOICES_SHEET_URL = HARDCODED_INVOICES_SHEET
+                st.sidebar.success("🎯 Using default configuration")
+            else:
+                CUSTOMERS_SHEET_URL = st.sidebar.text_input("📄 Customers Google Sheet URL", DEFAULT_CUSTOMERS_SHEET)
+                INVOICES_SHEET_URL = st.sidebar.text_input("🧾 Invoices Google Sheet URL", HARDCODED_INVOICES_SHEET)
+                N8N_WEBHOOK_URL = st.sidebar.text_input("🔗 N8N Webhook URL", DEFAULT_N8N_WEBHOOK)
+            
+            # --- LOAD DATA ---
+            customers_df = pd.DataFrame()
             invoices_df = pd.DataFrame()
+            price_list_df = pd.DataFrame()
+            
+            # Load customers
+            if CUSTOMERS_SHEET_URL:
+                try:
+                    customers_sheet = client.open_by_url(CUSTOMERS_SHEET_URL)
+                    customers_worksheet = customers_sheet.sheet1
+                    customers_data = customers_worksheet.get_all_records()
+                    customers_df = pd.DataFrame(customers_data)
+                    if not customers_df.empty:
+                        st.sidebar.success(f"✅ Loaded {len(customers_df)} customers")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Error loading customers: {str(e)}")
+            
+            # Load invoices
             if INVOICES_SHEET_URL:
                 try:
                     invoices_sheet = client.open_by_url(INVOICES_SHEET_URL)
                     invoices_worksheet = invoices_sheet.sheet1
                     invoices_data = invoices_worksheet.get_all_records()
                     invoices_df = pd.DataFrame(invoices_data)
-                    
                     if not invoices_df.empty:
                         st.sidebar.success(f"✅ Loaded {len(invoices_df)} invoices")
-                    else:
-                        st.sidebar.info("📋 No invoices found")
-                        
                 except Exception as e:
                     st.sidebar.warning(f"⚠️ Invoices sheet not accessible: {str(e)}")
-                    invoices_df = pd.DataFrame()
-            else:
-                st.sidebar.info("💡 Using hardcoded invoices sheet")
-
+            
+            # Load price list
+            try:
+                price_sheet = client.open_by_url(PRICE_LIST_SHEET)
+                price_worksheet = price_sheet.sheet1
+                price_data = price_worksheet.get_all_records()
+                price_list_df = pd.DataFrame(price_data)
+                if not price_list_df.empty:
+                    st.sidebar.success(f"✅ Loaded {len(price_list_df)} price items")
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ Price list not accessible: {str(e)}")
+                # Create sample price data
+                price_list_df = pd.DataFrame([
+                    {"Service Category": "Washing", "Item": "Regular Wash", "Price (USD)": 15.00, "Turnaround Time": "2 hours", "Notes": "Standard washing service"},
+                    {"Service Category": "Dry Cleaning", "Item": "Suit Cleaning", "Price (USD)": 25.00, "Turnaround Time": "24 hours", "Notes": "Professional dry cleaning"},
+                    {"Service Category": "Pressing", "Item": "Shirt Press", "Price (USD)": 8.00, "Turnaround Time": "1 hour", "Notes": "Professional pressing"},
+                    {"Service Category": "Alterations", "Item": "Hem Adjustment", "Price (USD)": 12.00, "Turnaround Time": "48 hours", "Notes": "Basic alterations"},
+                    {"Service Category": "Special", "Item": "Express Service", "Price (USD)": 35.00, "Turnaround Time": "30 minutes", "Notes": "Rush service available"}
+                ])
+            
             # --- DASHBOARD TAB ---
             with tab1:
                 st.subheader("📊 CRM Dashboard")
-
+                
+                # User-specific greeting
+                st.markdown(f"### Welcome back, {st.session_state.user_info['name']}! 👋")
+                
                 # --- METRICS ROW ---
                 col1, col2, col3, col4 = st.columns(4)
                 
@@ -210,16 +344,16 @@ if auth_file:
                         <h2>{len(customers_df)}</h2>
                     </div>
                     ''', unsafe_allow_html=True)
-
+                
                 with col2:
-                    notes_count = len(customers_df[customers_df["Notes"].str.strip() != ""]) if "Notes" in customers_df.columns else 0
+                    team_members = sum(len(team["members"]) for team in TEAM_STRUCTURE.values())
                     st.markdown(f'''
                     <div class="metric-card">
-                        <h3>📝 With Notes</h3>
-                        <h2>{notes_count}</h2>
+                        <h3>👨‍💼 Team Members</h3>
+                        <h2>{team_members}</h2>
                     </div>
                     ''', unsafe_allow_html=True)
-
+                
                 with col3:
                     invoice_count = len(invoices_df) if not invoices_df.empty else 0
                     st.markdown(f'''
@@ -228,81 +362,38 @@ if auth_file:
                         <h2>{invoice_count}</h2>
                     </div>
                     ''', unsafe_allow_html=True)
-
+                
                 with col4:
-                    pending_invoices = len(invoices_df[invoices_df["Status"] == "Pending"]) if not invoices_df.empty and "Status" in invoices_df.columns else 0
+                    price_items = len(price_list_df)
                     st.markdown(f'''
                     <div class="metric-card">
-                        <h3>⏳ Pending Invoices</h3>
-                        <h2>{pending_invoices}</h2>
+                        <h3>💰 Price Items</h3>
+                        <h2>{price_items}</h2>
                     </div>
                     ''', unsafe_allow_html=True)
-
-                # --- CHARTS ---
-                if not invoices_df.empty and "Invoice Date" in invoices_df.columns:
-                    st.subheader("📈 Revenue Analytics")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # Revenue by month
-                        if "Amount" in invoices_df.columns:
-                            monthly_revenue = invoices_df.groupby(invoices_df["Invoice Date"].str[:7])["Amount"].sum().reset_index()
-                            fig = px.bar(monthly_revenue, x="Invoice Date", y="Amount", title="Monthly Revenue")
-                            fig.update_layout(xaxis_title="Month", yaxis_title="Revenue ($)")
-                            st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
-                        # Invoice status distribution
-                        if "Status" in invoices_df.columns:
-                            status_counts = invoices_df["Status"].value_counts()
-                            fig = px.pie(values=status_counts.values, names=status_counts.index, title="Invoice Status Distribution")
-                            st.plotly_chart(fig, use_container_width=True)
-
-                # --- SEARCH ---
-                st.subheader("🔍 Customer Search")
-                search_col1, search_col2 = st.columns([3, 1])
                 
-                with search_col1:
-                    search = st.text_input("Search by Name or Phone Number", "")
+                # Team overview for current user
+                st.subheader(f"👥 Your Team: {st.session_state.user_info['team']}")
                 
-                with search_col2:
-                    search_type = st.selectbox("Search Type", ["All", "Name", "Phone", "Email"])
-
-                # Filter customers based on search
-                filtered_df = customers_df.copy()
-                if search:
-                    if search_type == "Name":
-                        filtered_df = filtered_df[filtered_df["Name"].str.contains(search, case=False, na=False)]
-                    elif search_type == "Phone":
-                        filtered_df = filtered_df[filtered_df["Phone Number"].str.contains(search, case=False, na=False)]
-                    elif search_type == "Email":
-                        filtered_df = filtered_df[filtered_df["Email"].str.contains(search, case=False, na=False)]
-                    else:
-                        filtered_df = filtered_df[
-                            filtered_df["Name"].str.contains(search, case=False, na=False) |
-                            filtered_df["Phone Number"].str.contains(search, case=False, na=False) |
-                            filtered_df["Email"].str.contains(search, case=False, na=False)
-                        ]
-
-                # --- CUSTOMER CARDS ---
-                st.subheader("📇 Customer Cards")
-                for idx, row in filtered_df.iterrows():
-                    with st.expander(f"👤 {row['Name']} ({row['Phone Number']})"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown(f"**📧 Email:** {row['Email']}")
-                            st.markdown(f"**📍 Address:** {row['Address']}")
-                            st.markdown(f"**🕑 Preferred Time:** {row['Preferred_Time']}")
-                            st.markdown(f"**📞 Contact Preference:** {row['Preference']}")
-                        with col2:
-                            st.markdown(f"**📦 Items:** {row['Items']}")
-                            st.markdown(f"**📝 Notes:** {row['Notes']}")
-                            st.markdown(f"**📋 Call Summary:** {row['Call_summary']}")
-
-            # --- ADD NEW CUSTOMER TAB ---
+                user_team = TEAM_STRUCTURE.get(st.session_state.user_info['team'], {})
+                if user_team:
+                    st.markdown(f"**Team Lead:** {user_team['team_lead']}")
+                    
+                    team_cols = st.columns(len(user_team['members']))
+                    for idx, member in enumerate(user_team['members']):
+                        with team_cols[idx % len(team_cols)]:
+                            status_emoji = "🟢" if member['status'] == 'Active' else "🔴"
+                            st.markdown(f"""
+                            <div class="team-card" style="font-size: 0.9em;">
+                                <strong>{status_emoji} {member['name']}</strong><br>
+                                <small>{member['role']}</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+            
+            # --- ADD CUSTOMER TAB ---
             with tab2:
                 st.subheader("➕ Add New Customer")
+                st.markdown(f"*Adding as: {st.session_state.user_info['name']}*")
                 
                 with st.form("add_contact", clear_on_submit=True):
                     col1, col2 = st.columns(2)
@@ -313,21 +404,23 @@ if auth_file:
                         phone = st.text_input("📱 Phone Number", placeholder="+1 (555) 123-4567")
                         preference = st.selectbox("📞 Contact Preference", ["Call", "Text", "Email", "WhatsApp"])
                         preferred_time = st.text_input("🕑 Preferred Time", placeholder="e.g., 9 AM - 5 PM")
-                        
+                    
                     with col2:
                         address = st.text_area("📍 Address", placeholder="Enter full address")
                         items = st.text_area("📦 Items", placeholder="Describe laundry items")
                         notes = st.text_area("📝 Notes", placeholder="Additional notes")
-                        call_summary = st.text_area("📋 Call Summary", placeholder="Summary of last conversation")
-
+                        call_summary = st.text_area("📋 Call Summary", placeholder="Summary of conversation")
+                    
                     submitted = st.form_submit_button("✅ Add Customer", type="primary")
                     
                     if submitted:
                         if name and phone:
                             try:
+                                # Add user info to the record
                                 customers_worksheet.append_row([
                                     name, email, phone, preference, preferred_time,
-                                    address, items, notes, call_summary
+                                    address, items, f"{notes} [Added by: {st.session_state.user_info['name']}]", 
+                                    call_summary
                                 ])
                                 st.success("✅ Customer added successfully!")
                                 st.balloons()
@@ -336,58 +429,49 @@ if auth_file:
                                 st.error(f"❌ Error adding customer: {str(e)}")
                         else:
                             st.error("❌ Name and Phone Number are required!")
-
+            
             # --- VIEW ALL TAB ---
             with tab3:
                 st.subheader("📋 All Customers")
                 
-                # Filter options
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    pref_filter = st.selectbox("Filter by Preference", ["All"] + list(customers_df["Preference"].unique()))
-                with col2:
-                    sort_by = st.selectbox("Sort by", ["Name", "Phone Number", "Email", "Preferred_Time"])
-                with col3:
-                    sort_order = st.selectbox("Order", ["Ascending", "Descending"])
-
-                # Apply filters
-                display_df = customers_df.copy()
-                if pref_filter != "All":
-                    display_df = display_df[display_df["Preference"] == pref_filter]
-                
-                display_df = display_df.sort_values(sort_by, ascending=(sort_order == "Ascending"))
-
-                # Interactive table
-                gb = GridOptionsBuilder.from_dataframe(display_df)
-                gb.configure_pagination(paginationAutoPageSize=True)
-                gb.configure_side_bar()
-                gb.configure_selection('multiple', use_checkbox=True)
-                gb.configure_default_column(editable=True, groupable=True)
-                
-                gridOptions = gb.build()
-                
-                grid_response = AgGrid(
-                    display_df,
-                    gridOptions=gridOptions,
-                    height=500,
-                    width='100%',
-                    theme='alpine',
-                    update_mode=GridUpdateMode.MODEL_CHANGED,
-                    fit_columns_on_grid_load=True,
-                    allow_unsafe_jscode=True,
-                    enable_enterprise_modules=True
-                )
-
-                # Export functionality
-                if st.button("📥 Export to CSV"):
-                    csv = display_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download CSV",
-                        data=csv,
-                        file_name=f"customers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
+                if not customers_df.empty:
+                    # Filter options
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        pref_filter = st.selectbox("Filter by Preference", ["All"] + list(customers_df["Preference"].unique()))
+                    with col2:
+                        sort_by = st.selectbox("Sort by", ["Name", "Phone Number", "Email", "Preferred_Time"])
+                    with col3:
+                        sort_order = st.selectbox("Order", ["Ascending", "Descending"])
+                    
+                    # Apply filters
+                    display_df = customers_df.copy()
+                    if pref_filter != "All":
+                        display_df = display_df[display_df["Preference"] == pref_filter]
+                    
+                    display_df = display_df.sort_values(sort_by, ascending=(sort_order == "Ascending"))
+                    
+                    # Interactive table
+                    gb = GridOptionsBuilder.from_dataframe(display_df)
+                    gb.configure_pagination(paginationAutoPageSize=True)
+                    gb.configure_side_bar()
+                    gb.configure_selection('multiple', use_checkbox=True)
+                    gb.configure_default_column(editable=True, groupable=True)
+                    
+                    gridOptions = gb.build()
+                    
+                    AgGrid(
+                        display_df,
+                        gridOptions=gridOptions,
+                        height=500,
+                        width='100%',
+                        theme='alpine',
+                        update_mode=GridUpdateMode.MODEL_CHANGED,
+                        fit_columns_on_grid_load=True
                     )
-
+                else:
+                    st.info("No customers found. Add some customers first!")
+            
             # --- INVOICES TAB ---
             with tab4:
                 st.subheader("🧾 Invoices Management")
@@ -398,139 +482,212 @@ if auth_file:
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            invoice_customer = st.selectbox("👤 Customer", customers_df["Name"].tolist() if not customers_df.empty else ["Malcolm"])
+                            invoice_customer = st.selectbox("👤 Customer", customers_df["Name"].tolist() if not customers_df.empty else ["Sample Customer"])
                             invoice_date = st.date_input("📅 Invoice Date", datetime.now())
                             invoice_amount = st.number_input("💰 Amount", min_value=0.0, format="%.2f")
                             invoice_status = st.selectbox("📊 Status", ["Pending", "Paid", "Overdue", "Cancelled"])
-                            
+                        
                         with col2:
                             invoice_items = st.text_area("📦 Items", placeholder="List of services/items")
                             invoice_notes = st.text_area("📝 Notes", placeholder="Additional invoice notes")
                             due_date = st.date_input("⏰ Due Date", datetime.now() + timedelta(days=30))
                             payment_method = st.selectbox("💳 Payment Method", ["Cash", "Card", "Bank Transfer", "PayPal"])
-
+                        
                         if st.form_submit_button("💾 Create Invoice"):
                             try:
-                                # Create CSV format data
                                 invoice_data = [
                                     invoice_customer,
                                     str(invoice_date),
                                     invoice_amount,
                                     invoice_status,
                                     invoice_items,
-                                    invoice_notes,
+                                    f"{invoice_notes} [Created by: {st.session_state.user_info['name']}]",
                                     str(due_date),
                                     payment_method
                                 ]
                                 
-                                # Add to Google Sheets
                                 invoices_worksheet.append_row(invoice_data)
-                                
-                                # Also create CSV download
-                                csv_buffer = io.StringIO()
-                                csv_writer = csv.writer(csv_buffer)
-                                csv_writer.writerow(["Customer", "Invoice Date", "Amount", "Status", "Items", "Notes", "Due Date", "Payment Method"])
-                                csv_writer.writerow(invoice_data)
-                                
                                 st.success("✅ Invoice created successfully!")
-                                st.download_button(
-                                    label="📥 Download Invoice CSV",
-                                    data=csv_buffer.getvalue(),
-                                    file_name=f"invoice_{invoice_customer}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                    mime="text/csv"
-                                )
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Error creating invoice: {e}")
-
-                # Sample invoice data with Malcolm
-                if invoices_df.empty:
-                    st.info("📋 No invoices found. Here's a sample:")
-                    sample_invoice = pd.DataFrame([{
-                        "Customer": "Malcolm",
-                        "Invoice Date": "",
-                        "Amount": "",
-                        "Status": "Pending",
-                        "Items": "",
-                        "Notes": "",
-                        "Due Date": "",
-                        "Payment Method": "Cash"
-                    }])
-                    st.dataframe(sample_invoice, use_container_width=True)
-
+                
                 # Display invoices
                 if not invoices_df.empty:
-                    st.subheader("📊 Invoice Overview")
-                    
-                    # Invoice filters
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        status_filter = st.selectbox("Filter by Status", ["All"] + list(invoices_df["Status"].unique()))
-                    with col2:
-                        customer_filter = st.selectbox("Filter by Customer", ["All"] + list(invoices_df["Customer"].unique()))
-                    with col3:
-                        if st.button("📥 Export All Invoices CSV"):
-                            csv = invoices_df.to_csv(index=False)
-                            st.download_button(
-                                label="Download All Invoices CSV",
-                                data=csv,
-                                file_name=f"all_invoices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
-
-                    # Apply filters
-                    filtered_invoices = invoices_df.copy()
-                    if status_filter != "All":
-                        filtered_invoices = filtered_invoices[filtered_invoices["Status"] == status_filter]
-                    if customer_filter != "All":
-                        filtered_invoices = filtered_invoices[filtered_invoices["Customer"] == customer_filter]
-
-                    # Invoice table
-                    gb = GridOptionsBuilder.from_dataframe(filtered_invoices)
-                    gb.configure_pagination(paginationAutoPageSize=True)
-                    gb.configure_side_bar()
-                    gb.configure_selection('multiple', use_checkbox=True)
-                    gb.configure_default_column(editable=True, groupable=True)
-                    
-                    gridOptions = gb.build()
-                    
-                    AgGrid(
-                        filtered_invoices,
-                        gridOptions=gridOptions,
-                        height=400,
-                        width='100%',
-                        theme='alpine',
-                        update_mode=GridUpdateMode.MODEL_CHANGED,
-                        fit_columns_on_grid_load=True
-                    )
-
-            # --- SUPER CHAT TAB ---
+                    st.dataframe(invoices_df, use_container_width=True)
+                else:
+                    st.info("No invoices found. Create your first invoice!")
+            
+            # --- PRICE LIST TAB ---
             with tab5:
+                st.subheader("💰 Price List Management")
+                
+                # Price list header
+                st.markdown(f"""
+                <div class="price-card">
+                    <h3>📊 Live Price List</h3>
+                    <p>Connected to: <a href="{PRICE_LIST_SHEET}" target="_blank">Google Sheets Price Database</a></p>
+                    <p>Managed by: {st.session_state.user_info['name']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if not price_list_df.empty:
+                    # Price list filters
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        category_filter = st.selectbox("Filter by Category", ["All"] + list(price_list_df["Service Category"].unique()))
+                    
+                    with col2:
+                        price_range = st.slider("Price Range (USD)", 
+                                              min_value=float(price_list_df["Price (USD)"].min()), 
+                                              max_value=float(price_list_df["Price (USD)"].max()),
+                                              value=(float(price_list_df["Price (USD)"].min()), float(price_list_df["Price (USD)"].max())))
+                    
+                    with col3:
+                        if st.button("🔄 Refresh Price List"):
+                            st.rerun()
+                    
+                    # Apply filters
+                    filtered_prices = price_list_df.copy()
+                    if category_filter != "All":
+                        filtered_prices = filtered_prices[filtered_prices["Service Category"] == category_filter]
+                    
+                    filtered_prices = filtered_prices[
+                        (filtered_prices["Price (USD)"] >= price_range[0]) & 
+                        (filtered_prices["Price (USD)"] <= price_range[1])
+                    ]
+                    
+                    # Display price list
+                    st.subheader("📋 Current Prices")
+                    
+                    # Price cards
+                    for idx, row in filtered_prices.iterrows():
+                        col1, col2, col3, col4 = st.columns([2, 2, 1, 3])
+                        
+                        with col1:
+                            st.markdown(f"**{row['Service Category']}**")
+                            st.markdown(f"*{row['Item']}*")
+                        
+                        with col2:
+                            st.markdown(f"**💰 ${row['Price (USD)']}**")
+                        
+                        with col3:
+                            st.markdown(f"**⏱️ {row['Turnaround Time']}**")
+                        
+                        with col4:
+                            st.markdown(f"📝 {row['Notes']}")
+                        
+                        st.markdown("---")
+                    
+                    # Price analytics
+                    st.subheader("📊 Price Analytics")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Price by category
+                        category_avg = filtered_prices.groupby("Service Category")["Price (USD)"].mean().reset_index()
+                        fig = px.bar(category_avg, x="Service Category", y="Price (USD)", 
+                                   title="Average Price by Category")
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        # Price distribution
+                        fig = px.histogram(filtered_prices, x="Price (USD)", 
+                                         title="Price Distribution", nbins=10)
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Export price list
+                    if st.button("📥 Export Price List CSV"):
+                        csv = filtered_prices.to_csv(index=False)
+                        st.download_button(
+                            label="Download Price List CSV",
+                            data=csv,
+                            file_name=f"price_list_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                
+                else:
+                    st.warning("⚠️ Price list not available. Please check the Google Sheets connection.")
+            
+            # --- TEAM MANAGEMENT TAB ---
+            with tab6:
+                st.subheader("👥 Team Management")
+                
+                # Team overview
+                st.markdown(f"**Your Access Level:** {st.session_state.user_info['role']}")
+                
+                # Display all teams
+                for team_name, team_info in TEAM_STRUCTURE.items():
+                    with st.expander(f"🏢 {team_name} Team ({len(team_info['members'])} members)"):
+                        st.markdown(f"**Team Lead:** {team_info['team_lead']}")
+                        
+                        # Team members table
+                        team_df = pd.DataFrame(team_info['members'])
+                        
+                        # Add action buttons for admins
+                        if st.session_state.user_info['role'] == 'Admin':
+                            st.markdown("*Admin controls available*")
+                        
+                        st.dataframe(team_df, use_container_width=True)
+                        
+                        # Team stats
+                        active_members = len([m for m in team_info['members'] if m['status'] == 'Active'])
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("👥 Total Members", len(team_info['members']))
+                        with col2:
+                            st.metric("✅ Active", active_members)
+                        with col3:
+                            st.metric("📊 Team Load", f"{active_members * 20}%")
+                
+                # Team performance chart
+                st.subheader("📈 Team Performance Overview")
+                
+                team_data = []
+                for team_name, team_info in TEAM_STRUCTURE.items():
+                    active_count = len([m for m in team_info['members'] if m['status'] == 'Active'])
+                    team_data.append({
+                        "Team": team_name,
+                        "Active Members": active_count,
+                        "Total Members": len(team_info['members'])
+                    })
+                
+                team_df = pd.DataFrame(team_data)
+                fig = px.bar(team_df, x="Team", y=["Active Members", "Total Members"], 
+                           title="Team Composition", barmode="group")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # --- SUPER CHAT TAB ---
+            with tab7:
                 st.subheader("💬 Laundry Super Chat")
                 
-                st.markdown("""
+                st.markdown(f"""
                 <div class="chat-container">
-                    <h3>🤖 AI Assistant</h3>
+                    <h3>🤖 AI Assistant for {st.session_state.user_info['name']}</h3>
                     <p>Chat with our AI assistant powered by N8N automation</p>
+                    <p><strong>User Context:</strong> {st.session_state.user_info['role']} in {st.session_state.user_info['team']}</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
                 # Chat interface
                 if "messages" not in st.session_state:
                     st.session_state.messages = []
-
+                
                 # Display chat messages
                 for message in st.session_state.messages:
                     with st.chat_message(message["role"]):
                         st.markdown(message["content"])
-
+                
                 # Chat input
                 if prompt := st.chat_input("Type your message here..."):
                     st.session_state.messages.append({"role": "user", "content": prompt})
                     with st.chat_message("user"):
                         st.markdown(prompt)
-
-                    # Send to N8N webhook
+                    
+                    # Send to N8N webhook with user context
                     if N8N_WEBHOOK_URL:
                         try:
                             with st.spinner("🤖 AI is thinking..."):
@@ -538,7 +695,10 @@ if auth_file:
                                     N8N_WEBHOOK_URL,
                                     json={
                                         "message": prompt,
-                                        "user_id": "streamlit_user",
+                                        "user_id": st.session_state.username,
+                                        "user_name": st.session_state.user_info['name'],
+                                        "user_role": st.session_state.user_info['role'],
+                                        "user_team": st.session_state.user_info['team'],
                                         "timestamp": datetime.now().isoformat(),
                                         "customer_count": len(customers_df),
                                         "system": "laundry_crm"
@@ -554,48 +714,19 @@ if auth_file:
                                         bot_response = response.text if response.text else "I'm processing your request..."
                                 else:
                                     bot_response = "Sorry, I'm having trouble connecting right now. Please try again."
-                                    
-                        except requests.exceptions.Timeout:
-                            bot_response = "Request timed out. The AI might be busy. Please try again."
-                        except requests.exceptions.RequestException as e:
-                            bot_response = f"Connection error: {str(e)}"
+                        
                         except Exception as e:
-                            bot_response = f"Unexpected error: {str(e)}"
+                            bot_response = f"Connection error: {str(e)}"
                     else:
-                        bot_response = "AI chat is ready! Using default N8N integration."
-
+                        bot_response = f"Hello {st.session_state.user_info['name']}! AI chat is ready with your user context."
+                    
                     st.session_state.messages.append({"role": "assistant", "content": bot_response})
                     with st.chat_message("assistant"):
                         st.markdown(bot_response)
-
-                # Quick actions
-                st.subheader("🚀 Quick Actions")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("📊 Get Business Summary"):
-                        summary = f"Total Customers: {len(customers_df)}, Total Invoices: {len(invoices_df)}"
-                        st.session_state.messages.append({"role": "assistant", "content": summary})
-                        st.rerun()
-                
-                with col2:
-                    if st.button("🔍 Find Customer"):
-                        st.session_state.messages.append({"role": "assistant", "content": "Please tell me the customer's name or phone number."})
-                        st.rerun()
-                
-                with col3:
-                    if st.button("💰 Revenue Report"):
-                        if not invoices_df.empty and "Amount" in invoices_df.columns:
-                            total_revenue = invoices_df["Amount"].sum()
-                            report = f"Total Revenue: ${total_revenue:,.2f}"
-                        else:
-                            report = "No revenue data available."
-                        st.session_state.messages.append({"role": "assistant", "content": report})
-                        st.rerun()
-
+            
             # --- CALL CENTER TAB ---
-            with tab6:
-                st.subheader("📞 Call Center with Agent Management")
+            with tab8:
+                st.subheader("📞 Call Center Management")
                 
                 # Agent status overview
                 st.subheader("👥 Agent Status Overview")
@@ -611,292 +742,204 @@ if auth_file:
                         }.get(agent_info["status"], "⚪")
                         
                         st.markdown(f"""
-                        <div class="call-center-card">
+                        <div class="team-card">
                             <h4>{status_color} {agent_info['name']}</h4>
                             <p><strong>ID:</strong> {agent_id}</p>
                             <p><strong>Status:</strong> {agent_info['status']}</p>
+                            <p><strong>Team:</strong> {agent_info['team']}</p>
                             <p><strong>Calls Today:</strong> {agent_info['calls_today']}</p>
                         </div>
                         """, unsafe_allow_html=True)
                 
-                # Call center interface
+                # Call management interface
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
-                    st.markdown("""
-                    <div class="call-center-card">
-                        <h3>📞 AI-Powered Call Center</h3>
-                        <p>Manage customer calls with optional VAPI AI integration</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.subheader("📞 Call Management")
                     
                     # Customer selection for call
-                    selected_customer = st.selectbox("👤 Select Customer for Call", customers_df["Name"].tolist() if not customers_df.empty else ["Malcolm"])
-                    selected_agent = st.selectbox("👨‍💼 Assign Agent", [f"{agent_id} - {info['name']}" for agent_id, info in CALL_CENTER_AGENTS.items()])
+                    selected_customer = st.selectbox("👤 Select Customer for Call", 
+                                                   customers_df["Name"].tolist() if not customers_df.empty else ["Sample Customer"])
+                    selected_agent = st.selectbox("👨‍💼 Assign Agent", 
+                                                 [f"{agent_id} - {info['name']}" for agent_id, info in CALL_CENTER_AGENTS.items()])
                     
-                    if selected_customer and not customers_df.empty:
-                        customer_info = customers_df[customers_df["Name"] == selected_customer].iloc[0]
-                        
-                        # Display customer info
-                        st.subheader("📋 Customer Information")
-                        col1_info, col2_info = st.columns(2)
-                        
-                        with col1_info:
-                            st.markdown(f"**📧 Email:** {customer_info['Email']}")
-                            st.markdown(f"**📱 Phone:** {customer_info['Phone Number']}")
-                            st.markdown(f"**📍 Address:** {customer_info['Address']}")
-                            
-                        with col2_info:
-                            st.markdown(f"**🕑 Preferred Time:** {customer_info['Preferred_Time']}")
-                            st.markdown(f"**📞 Contact Preference:** {customer_info['Preference']}")
-                            st.markdown(f"**📦 Items:** {customer_info['Items']}")
-                        
-                        st.markdown(f"**📝 Previous Notes:** {customer_info['Notes']}")
-                        st.markdown(f"**📋 Last Call Summary:** {customer_info['Call_summary']}")
+                    # Call controls
+                    col1_ctrl, col2_ctrl, col3_ctrl = st.columns(3)
+                    
+                    with col1_ctrl:
+                        if st.button("📞 Start Call", type="primary"):
+                            st.success(f"🟢 Call initiated by {st.session_state.user_info['name']}")
+                    
+                    with col2_ctrl:
+                        if st.button("⏹️ End Call"):
+                            st.warning("🔴 Call ended")
+                    
+                    with col3_ctrl:
+                        if st.button("⏸️ Hold"):
+                            st.info("⏸️ Call on hold")
                 
                 with col2:
-                    # Call controls
-                    st.subheader("🎛️ Call Controls")
-                    
-                    if st.button("📞 Start Call", type="primary"):
-                        if VAPI_API_KEY:
-                            st.success("🟢 Call initiated with VAPI AI")
-                            st.info("AI assistant is now handling the call...")
-                        else:
-                            st.success("🟢 Call initiated (Manual mode)")
-                            st.info("Agent handling call manually...")
-                    
-                    if st.button("⏹️ End Call"):
-                        st.warning("🔴 Call ended")
-                    
-                    if st.button("⏸️ Hold"):
-                        st.info("⏸️ Call on hold")
-                    
-                    if st.button("🔄 Transfer"):
-                        st.info("🔄 Call transferred")
-
-                # Call log and notes
-                st.subheader("📝 Call Notes & Summary")
-                
-                with st.form("call_notes"):
-                    call_type = st.selectbox("📞 Call Type", ["Inbound", "Outbound", "Follow-up", "Complaint", "Inquiry"])
-                    call_duration = st.number_input("⏱️ Duration (minutes)", min_value=0, value=0)
-                    call_outcome = st.selectbox("📊 Outcome", ["Resolved", "Follow-up Required", "Escalated", "No Answer", "Voicemail"])
-                    
-                    new_call_summary = st.text_area("📋 Call Summary", placeholder="Enter summary of the call...")
-                    additional_notes = st.text_area("📝 Additional Notes", placeholder="Any additional notes...")
-                    
-                    follow_up_date = st.date_input("📅 Follow-up Date", datetime.now() + timedelta(days=1))
-                    
-                    if st.form_submit_button("💾 Save Call Record"):
-                        if new_call_summary:
-                            # Update customer record with new call summary
-                            try:
-                                # Find the row to update
-                                customer_row = None
-                                for i, row in enumerate(customers_worksheet.get_all_records(), start=2):
-                                    if row["Name"] == selected_customer:
-                                        customer_row = i
-                                        break
-                                
-                                if customer_row:
-                                    # Update call summary
-                                    customers_worksheet.update_cell(customer_row, 9, new_call_summary)  # Assuming call_summary is column 9
-                                    
-                                    # Update notes
-                                    current_notes = customer_info['Notes'] if not customers_df.empty else ""
-                                    updated_notes = f"{current_notes}\n\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {additional_notes}" if additional_notes else current_notes
-                                    customers_worksheet.update_cell(customer_row, 8, updated_notes)  # Assuming notes is column 8
-                                    
-                                    st.success("✅ Call record saved successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Could not find customer record to update")
-                            except Exception as e:
-                                st.error(f"❌ Error saving call record: {e}")
-                        else:
-                            st.error("❌ Please enter a call summary")
-
-                # Recent calls table
-                st.subheader("📞 Recent Calls")
-                
-                # Sample call data
-                recent_calls_data = {
-                    "Customer": [selected_customer] * 3,
-                    "Agent": [selected_agent.split(" - ")[1]] * 3,
-                    "Date": [datetime.now().strftime("%Y-%m-%d")] * 3,
-                    "Duration": ["5 min", "8 min", "12 min"],
-                    "Type": ["Inbound", "Outbound", "Follow-up"],
-                    "Outcome": ["Resolved", "Follow-up Required", "Resolved"]
-                }
-                
-                recent_calls_df = pd.DataFrame(recent_calls_data)
-                st.dataframe(recent_calls_df, use_container_width=True)
-
+                    st.subheader("📊 Call Stats")
+                    total_calls = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
+                    st.metric("📞 Total Calls Today", total_calls)
+                    st.metric("👥 Available Agents", len([a for a in CALL_CENTER_AGENTS.values() if a["status"] == "Available"]))
+                    st.metric("🎧 Your Role", st.session_state.user_info['role'])
+            
             # --- ANALYTICS TAB ---
-            with tab7:
+            with tab9:
                 st.subheader("📊 Advanced Analytics")
                 
                 # Analytics overview
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
-                    total_agents = len(CALL_CENTER_AGENTS)
                     st.markdown(f'''
                     <div class="metric-card">
-                        <h3>👥 Total Agents</h3>
-                        <h2>{total_agents}</h2>
+                        <h3>👥 Total Users</h3>
+                        <h2>{len(DEMO_ACCOUNTS)}</h2>
                     </div>
                     ''', unsafe_allow_html=True)
-
-                with col2:
-                    available_agents = len([a for a in CALL_CENTER_AGENTS.values() if a["status"] == "Available"])
-                    st.markdown(f'''
-                    <div class="metric-card">
-                        <h3>🟢 Available Agents</h3>
-                        <h2>{available_agents}</h2>
-                    </div>
-                    ''', unsafe_allow_html=True)
-
-                with col3:
-                    total_calls_today = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
-                    st.markdown(f'''
-                    <div class="metric-card">
-                        <h3>📞 Calls Today</h3>
-                        <h2>{total_calls_today}</h2>
-                    </div>
-                    ''', unsafe_allow_html=True)
-
-                with col4:
-                    avg_calls = total_calls_today / total_agents if total_agents > 0 else 0
-                    st.markdown(f'''
-                    <div class="metric-card">
-                        <h3>📈 Avg Calls/Agent</h3>
-                        <h2>{avg_calls:.1f}</h2>
-                    </div>
-                    ''', unsafe_allow_html=True)
-
-                # Agent performance chart
-                st.subheader("📈 Agent Performance")
-                agent_data = pd.DataFrame([
-                    {"Agent": info["name"], "Calls": info["calls_today"], "Status": info["status"]}
-                    for info in CALL_CENTER_AGENTS.values()
-                ])
                 
-                fig = px.bar(agent_data, x="Agent", y="Calls", color="Status", title="Calls per Agent Today")
+                with col2:
+                    total_team_members = sum(len(team["members"]) for team in TEAM_STRUCTURE.values())
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>👨‍💼 Team Members</h3>
+                        <h2>{total_team_members}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                with col3:
+                    total_calls = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>📞 Total Calls</h3>
+                        <h2>{total_calls}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                with col4:
+                    avg_price = price_list_df["Price (USD)"].mean() if not price_list_df.empty else 0
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>💰 Avg Price</h3>
+                        <h2>${avg_price:.2f}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                # User activity analytics
+                st.subheader("👤 User Activity")
+                st.markdown(f"**Current Session:** {st.session_state.user_info['name']} ({st.session_state.user_info['role']})")
+                
+                # Team performance analytics
+                st.subheader("📈 Team Performance")
+                
+                team_performance_data = []
+                for team_name, team_info in TEAM_STRUCTURE.items():
+                    active_members = len([m for m in team_info['members'] if m['status'] == 'Active'])
+                    team_performance_data.append({
+                        "Team": team_name,
+                        "Active Members": active_members,
+                        "Performance Score": active_members * 85  # Mock performance score
+                    })
+                
+                team_perf_df = pd.DataFrame(team_performance_data)
+                fig = px.bar(team_perf_df, x="Team", y="Performance Score", 
+                           title="Team Performance Scores")
                 st.plotly_chart(fig, use_container_width=True)
-
-                # CSV Export for all data
+                
+                # Export all data
                 st.subheader("📥 Data Export")
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    if st.button("📥 Export Customers CSV"):
-                        if not customers_df.empty:
-                            csv = customers_df.to_csv(index=False)
-                            st.download_button(
-                                label="Download Customers CSV",
-                                data=csv,
-                                file_name=f"customers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.warning("No customer data to export")
-
-                with col2:
-                    if st.button("📥 Export Invoices CSV"):
-                        if not invoices_df.empty:
-                            csv = invoices_df.to_csv(index=False)
-                            st.download_button(
-                                label="Download Invoices CSV",
-                                data=csv,
-                                file_name=f"invoices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            # Create sample CSV with Malcolm
-                            sample_data = pd.DataFrame([{
-                                "Customer": "Malcolm",
-                                "Invoice Date": "",
-                                "Amount": "",
-                                "Status": "Pending",
-                                "Items": "",
-                                "Notes": "",
-                                "Due Date": "",
-                                "Payment Method": "Cash"
-                            }])
-                            csv = sample_data.to_csv(index=False)
-                            st.download_button(
-                                label="Download Sample Invoice CSV",
-                                data=csv,
-                                file_name=f"sample_invoice_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
-
-                with col3:
-                    if st.button("📥 Export Agents CSV"):
-                        agents_data = pd.DataFrame([
-                            {"Agent_ID": agent_id, "Name": info["name"], "Status": info["status"], "Calls_Today": info["calls_today"]}
-                            for agent_id, info in CALL_CENTER_AGENTS.items()
-                        ])
-                        csv = agents_data.to_csv(index=False)
+                    if st.button("📥 Export All Data"):
+                        # Create comprehensive export
+                        export_data = {
+                            "customers": customers_df.to_dict('records') if not customers_df.empty else [],
+                            "invoices": invoices_df.to_dict('records') if not invoices_df.empty else [],
+                            "price_list": price_list_df.to_dict('records') if not price_list_df.empty else [],
+                            "teams": TEAM_STRUCTURE,
+                            "agents": CALL_CENTER_AGENTS,
+                            "exported_by": st.session_state.user_info['name'],
+                            "export_time": datetime.now().isoformat()
+                        }
+                        
                         st.download_button(
-                            label="Download Agents CSV",
-                            data=csv,
-                            file_name=f"agents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv"
+                            label="Download Complete Data Export (JSON)",
+                            data=json.dumps(export_data, indent=2),
+                            file_name=f"crm_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
                         )
-
-        else:
-            st.warning("⚠️ Please provide authentication to access the system.")
-            st.markdown("""
-            <div style="text-align: center; padding: 2rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; color: white; margin: 2rem 0;">
-                <h3>🔐 System Ready with Default Configuration</h3>
-                <p>✅ Customer Database: Connected</p>
-                <p>🧾 Invoice Database: Connected (Hardcoded)</p>
-                <p>🤖 AI Chat System: Ready</p>
-                <p>📊 Analytics: Active</p>
-                <p>👥 Call Center: 5 Agents Ready</p>
-                <p style="margin-top: 1rem; font-size: 0.9em; opacity: 0.8;">
-                    Upload your Google Service Account JSON file to begin managing customers.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+                
+                with col2:
+                    if st.button("📊 Export Analytics Report"):
+                        report_data = {
+                            "report_generated_by": st.session_state.user_info['name'],
+                            "report_date": datetime.now().isoformat(),
+                            "total_customers": len(customers_df),
+                            "total_invoices": len(invoices_df),
+                            "total_team_members": total_team_members,
+                            "total_calls_today": total_calls,
+                            "team_breakdown": team_performance_data
+                        }
+                        
+                        st.download_button(
+                            label="Download Analytics Report (JSON)",
+                            data=json.dumps(report_data, indent=2),
+                            file_name=f"analytics_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
+                        )
+                
+                with col3:
+                    if st.button("👥 Export User Data"):
+                        user_data = {
+                            "current_user": st.session_state.user_info,
+                            "all_users": DEMO_ACCOUNTS,
+                            "teams": TEAM_STRUCTURE,
+                            "export_time": datetime.now().isoformat()
+                        }
+                        
+                        st.download_button(
+                            label="Download User Data (JSON)",
+                            data=json.dumps(user_data, indent=2),
+                            file_name=f"user_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
+                        )
+        
+        except Exception as e:
+            st.error(f"❌ Error loading system: {e}")
+    
+    else:
+        # No auth file uploaded - show system ready message
+        st.markdown("""
+        <div style="text-align: center; padding: 3rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; color: white; margin: 2rem 0;">
+            <h2>🔐 System Ready - Upload Authentication</h2>
+            <p>Welcome {user_name}! Upload your Google Service Account JSON file to access all features.</p>
             
-    except Exception as e:
-        st.error(f"❌ Error loading JSON or connecting to Google Sheets: {e}")
-        st.error("Please check your credentials and sheet URLs.")
-
-else:
-    st.markdown("""
-    <div style="text-align: center; padding: 3rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; color: white;">
-        <h2>🔐 Welcome to Auto Laundry CRM Pro</h2>
-        <p>System is pre-configured and ready to use!</p>
-        <p style="font-size: 1.1em; margin: 1.5rem 0;">Just upload your Google Service Account JSON file to get started.</p>
-        
-        <div style="background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; margin: 1.5rem 0;">
-            <h3>✨ Pre-configured Features:</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
-                <div>
-                    <p>✅ Customer Database Connected</p>
-                    <p>🧾 Invoice Database Connected</p>
-                    <p>🤖 AI Chat System Ready</p>
-                    <p>📊 Analytics Dashboard Active</p>
-                </div>
-                <div>
-                    <p>📞 Call Center Integration</p>
-                    <p>👥 5 Hardcoded Agents Ready</p>
-                    <p>🔍 Advanced Search & Filters</p>
-                    <p>📥 CSV Export Functionality</p>
+            <div style="background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; margin: 1.5rem 0;">
+                <h3>✨ Your Access Level: {user_role}</h3>
+                <p>Team: {user_team}</p>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                    <div>
+                        <p>✅ Customer Management</p>
+                        <p>🧾 Invoice System</p>
+                        <p>💰 Live Price List</p>
+                        <p>📊 Analytics Dashboard</p>
+                    </div>
+                    <div>
+                        <p>👥 Team Management ({total_members} members)</p>
+                        <p>📞 Call Center Integration</p>
+                        <p>🤖 AI Chat System</p>
+                        <p>📥 Data Export Tools</p>
+                    </div>
                 </div>
             </div>
         </div>
-        
-        <div style="background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 10px; margin-top: 1.5rem;">
-            <p style="font-size: 0.9em; opacity: 0.9;">
-                <strong>Quick Start:</strong> Upload your service account JSON → Start managing customers immediately
-            </p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
+        """.format(
+            user_name=st.session_state.user_info['name'],
+            user_role=st.session_state.user_info['role'],
+            user_team=st.session_state.user_info['team'],
+            total_members=sum(len(team["members"]) for team in TEAM_STRUCTURE.values())
+        ), unsafe_allow_html=True)
