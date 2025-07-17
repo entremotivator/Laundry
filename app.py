@@ -12,6 +12,11 @@ from plotly.subplots import make_subplots
 import csv
 import io
 import hashlib
+import subprocess
+import sys
+import os
+import time
+import tempfile
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -78,6 +83,30 @@ CALL_CENTER_AGENTS = {
     "agent_005": {"name": "Lisa Thompson", "status": "Training", "calls_today": 3, "team": "Operations"}
 }
 
+# --- AI AGENTS CONFIGURATION ---
+STATIC_AGENTS = {
+    "Customer Support": {
+        "id": "your-support-agent-id",
+        "name": "Customer Support Agent",
+        "description": "Resolves product issues, answers questions, and ensures satisfying customer experiences with technical knowledge and empathy."
+    },
+    "Sales Assistant": {
+        "id": "your-sales-agent-id",
+        "name": "Sales Assistant",
+        "description": "Identifies qualified prospects, understands business challenges, and connects them with appropriate sales representatives."
+    },
+    "Appointment Scheduler": {
+        "id": "your-scheduler-agent-id",
+        "name": "Appointment Scheduler",
+        "description": "Efficiently books, confirms, reschedules, or cancels appointments while providing clear service information."
+    },
+    "Laundry Specialist": {
+        "id": "your-laundry-agent-id",
+        "name": "Laundry Specialist",
+        "description": "Expert in laundry services, pricing, and scheduling. Handles customer inquiries about cleaning services and special requests."
+    }
+}
+
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
@@ -133,6 +162,30 @@ st.markdown("""
         text-align: center;
         color: #333;
     }
+    .call-status-active {
+        background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .call-status-inactive {
+        background: linear-gradient(135deg, #f44336 0%, #da190b 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .agent-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        margin: 1rem 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -148,11 +201,203 @@ def logout_user():
             del st.session_state[key]
     st.session_state.logged_in = False
 
+# --- CALL CENTER FUNCTIONS ---
+def create_vapi_caller_script():
+    script_content = '''
+import sys
+import json
+import time
+from vapi_python import Vapi
+import signal
+import os
+
+def signal_handler(signum, frame):
+    print("Call interrupted by user")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+def main():
+    try:
+        if len(sys.argv) != 2:
+            print("Usage: python vapi_caller.py <config_json>")
+            sys.exit(1)
+       
+        config = json.loads(sys.argv[1])
+        api_key = config["api_key"]
+        assistant_id = config["assistant_id"]
+        overrides = config.get("overrides", {})
+       
+        print(f"Initializing VAPI with assistant: {assistant_id}")
+       
+        vapi = Vapi(api_key=api_key)
+       
+        print("Starting call...")
+        call_response = vapi.start(
+            assistant_id=assistant_id,
+            assistant_overrides=overrides
+        )
+       
+        call_id = getattr(call_response, 'id', 'unknown')
+        print(f"Call started successfully. Call ID: {call_id}")
+       
+        print("Call is active. Press Ctrl+C to stop.")
+       
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Stopping call...")
+            try:
+                vapi.stop()
+                print("Call stopped successfully")
+            except Exception as e:
+                print(f"Error stopping call: {e}")
+       
+    except Exception as e:
+        print(f"Error in VAPI caller: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+'''
+   
+    script_path = os.path.join(tempfile.gettempdir(), "vapi_caller.py")
+    with open(script_path, "w") as f:
+        f.write(script_content)
+   
+    return script_path
+
+def start_call_isolated(assistant_id, user_name=None, customer_info=None):
+    try:
+        # Get API key from secrets
+        try:
+            api_key = st.secrets["VAPI_API_KEY"]
+        except KeyError:
+            return False, "VAPI_API_KEY not found in secrets. Please add it to your .streamlit/secrets.toml file."
+        
+        # Kill any existing process
+        if st.session_state.current_process:
+            try:
+                st.session_state.current_process.terminate()
+                st.session_state.current_process.wait(timeout=5)
+            except:
+                try:
+                    st.session_state.current_process.kill()
+                except:
+                    pass
+            st.session_state.current_process = None
+       
+        # Create the caller script
+        script_path = create_vapi_caller_script()
+       
+        # Prepare configuration
+        config = {
+            "api_key": api_key,
+            "assistant_id": assistant_id,
+            "overrides": {}
+        }
+       
+        # Add user context
+        variable_values = {}
+        if user_name:
+            variable_values["name"] = user_name
+        if customer_info:
+            variable_values.update(customer_info)
+        
+        if variable_values:
+            config["overrides"]["variableValues"] = variable_values
+       
+        config_json = json.dumps(config)
+       
+        # Start the isolated process
+        process = subprocess.Popen(
+            [sys.executable, script_path, config_json],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+       
+        st.session_state.current_process = process
+        st.session_state.call_active = True
+        st.session_state.call_logs = []
+       
+        # Add to call history
+        st.session_state.call_history.append({
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'assistant_id': assistant_id,
+            'user_name': user_name,
+            'customer_info': customer_info,
+            'status': 'started',
+            'process_id': process.pid,
+            'initiated_by': st.session_state.user_info['name']
+        })
+       
+        return True, f"Call started (PID: {process.pid})"
+       
+    except Exception as e:
+        st.session_state.call_active = False
+        return False, f"Failed to start call: {str(e)}"
+
+def stop_call_isolated():
+    try:
+        if st.session_state.current_process:
+            st.session_state.current_process.terminate()
+           
+            try:
+                st.session_state.current_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                st.session_state.current_process.kill()
+                st.session_state.current_process.wait()
+           
+            st.session_state.current_process = None
+       
+        st.session_state.call_active = False
+       
+        # Update call history
+        if st.session_state.call_history:
+            st.session_state.call_history[-1]['status'] = 'stopped'
+            st.session_state.call_history[-1]['ended_by'] = st.session_state.user_info['name']
+       
+        return True, "Call stopped successfully"
+       
+    except Exception as e:
+        st.session_state.call_active = False
+        st.session_state.current_process = None
+        return False, f"Error stopping call: {str(e)}"
+
+def check_call_status():
+    if st.session_state.current_process:
+        poll_result = st.session_state.current_process.poll()
+        if poll_result is not None:
+            st.session_state.call_active = False
+            st.session_state.current_process = None
+           
+            if st.session_state.call_history:
+                st.session_state.call_history[-1]['status'] = 'ended'
+           
+            return False, f"Call process ended with code: {poll_result}"
+   
+    return st.session_state.call_active, "Call is active"
+
 # --- INITIALIZE SESSION STATE ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user_info' not in st.session_state:
     st.session_state.user_info = {}
+
+# Call center session state
+if "call_active" not in st.session_state:
+    st.session_state.call_active = False
+if "call_history" not in st.session_state:
+    st.session_state.call_history = []
+if "current_process" not in st.session_state:
+    st.session_state.current_process = None
+if "call_logs" not in st.session_state:
+    st.session_state.call_logs = []
 
 # --- LOGIN PAGE ---
 if not st.session_state.logged_in:
@@ -243,6 +488,29 @@ else:
     st.sidebar.markdown(f"**Current User:** {st.session_state.user_info['name']}")
     st.sidebar.markdown(f"**Role:** {st.session_state.user_info['role']}")
     st.sidebar.markdown(f"**Team:** {st.session_state.user_info['team']}")
+    
+    # --- SIDEBAR CALL STATUS ---
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📞 Call Center Status")
+    call_active, status_msg = check_call_status()
+    st.sidebar.write(f"**Call Active:** {'✅ Yes' if call_active else '❌ No'}")
+    st.sidebar.write(f"**Total Calls:** {len(st.session_state.call_history)}")
+    
+    if st.session_state.current_process:
+        st.sidebar.write(f"**Process ID:** {st.session_state.current_process.pid}")
+    
+    # Emergency controls
+    st.sidebar.subheader("🚨 Emergency Controls")
+    if st.sidebar.button("🔄 Reset Call System"):
+        if st.session_state.current_process:
+            try:
+                st.session_state.current_process.kill()
+            except:
+                pass
+        st.session_state.call_active = False
+        st.session_state.current_process = None
+        st.session_state.call_logs = []
+        st.sidebar.success("Call system reset")
     
     # --- TAB LAYOUT ---
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
@@ -364,11 +632,27 @@ else:
                     ''', unsafe_allow_html=True)
                 
                 with col4:
-                    price_items = len(price_list_df)
+                    total_calls = len(st.session_state.call_history)
                     st.markdown(f'''
                     <div class="metric-card">
-                        <h3>💰 Price Items</h3>
-                        <h2>{price_items}</h2>
+                        <h3>📞 Total Calls</h3>
+                        <h2>{total_calls}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                # Call status indicator
+                if st.session_state.call_active:
+                    st.markdown(f'''
+                    <div class="call-status-active">
+                        <h3>🟢 Call Currently Active</h3>
+                        <p>Process ID: {st.session_state.current_process.pid if st.session_state.current_process else 'Unknown'}</p>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                else:
+                    st.markdown('''
+                    <div class="call-status-inactive">
+                        <h3>🔴 No Active Calls</h3>
+                        <p>Ready to initiate new calls</p>
                     </div>
                     ''', unsafe_allow_html=True)
                 
@@ -724,16 +1008,119 @@ else:
                     with st.chat_message("assistant"):
                         st.markdown(bot_response)
             
-            # --- CALL CENTER TAB ---
+            # --- ADVANCED CALL CENTER TAB ---
             with tab8:
-                st.subheader("📞 Call Center Management")
+                st.subheader("📞 Advanced Call Center with AI Agents")
                 
-                # Agent status overview
-                st.subheader("👥 Agent Status Overview")
-                agent_cols = st.columns(len(CALL_CENTER_AGENTS))
+                # Call status indicator
+                call_active, status_msg = check_call_status()
+                if call_active:
+                    st.markdown(f'''
+                    <div class="call-status-active">
+                        <h3>🟢 Call Currently Active</h3>
+                        <p>{status_msg}</p>
+                        <p>Process ID: {st.session_state.current_process.pid if st.session_state.current_process else 'Unknown'}</p>
+                        <p>Initiated by: {st.session_state.user_info['name']}</p>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                else:
+                    st.markdown(f'''
+                    <div class="call-status-inactive">
+                        <h3>🔴 No Active Calls</h3>
+                        <p>{status_msg}</p>
+                        <p>Ready to initiate new calls</p>
+                    </div>
+                    ''', unsafe_allow_html=True)
                 
-                for idx, (agent_id, agent_info) in enumerate(CALL_CENTER_AGENTS.items()):
-                    with agent_cols[idx]:
+                # Main call interface
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.subheader("🤖 AI Agent Selection")
+                    
+                    # Display AI agent cards
+                    for agent_key, agent_info in STATIC_AGENTS.items():
+                        with st.expander(f"🤖 {agent_info['name']}", expanded=False):
+                            st.markdown(f"""
+                            <div class="agent-card">
+                                <h4>{agent_info['name']}</h4>
+                                <p><strong>Description:</strong> {agent_info['description']}</p>
+                                <p><strong>Agent ID:</strong> {agent_info['id']}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            # Customer selection and user input
+                            col_customer, col_user = st.columns(2)
+                            
+                            with col_customer:
+                                selected_customer = st.selectbox(
+                                    "👤 Select Customer (optional):", 
+                                    ["None"] + (customers_df["Name"].tolist() if not customers_df.empty else []),
+                                    key=f"customer_{agent_key}"
+                                )
+                            
+                            with col_user:
+                                user_name = st.text_input(
+                                    f"Your Name:", 
+                                    value=st.session_state.user_info['name'],
+                                    key=f"name_{agent_key}"
+                                )
+                            
+                            # Prepare customer info
+                            customer_info = None
+                            if selected_customer != "None" and not customers_df.empty:
+                                customer_row = customers_df[customers_df["Name"] == selected_customer].iloc[0]
+                                customer_info = {
+                                    "customer_name": customer_row.get("Name", ""),
+                                    "customer_phone": customer_row.get("Phone Number", ""),
+                                    "customer_email": customer_row.get("Email", ""),
+                                    "customer_preference": customer_row.get("Preference", ""),
+                                    "customer_notes": customer_row.get("Notes", "")
+                                }
+                            
+                            # Call control buttons
+                            col_start, col_stop = st.columns(2)
+                            
+                            with col_start:
+                                if st.button(
+                                    f"📞 Call with {agent_key}", 
+                                    key=f"call_{agent_key}", 
+                                    disabled=st.session_state.call_active,
+                                    type="primary"
+                                ):
+                                    success, message = start_call_isolated(
+                                        agent_info["id"], 
+                                        user_name, 
+                                        customer_info
+                                    )
+                                    if success:
+                                        st.success(f"✅ {message}")
+                                        st.balloons()
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
+                            
+                            with col_stop:
+                                if st.button(
+                                    f"⛔ Stop Call", 
+                                    key=f"stop_{agent_key}", 
+                                    disabled=not st.session_state.call_active
+                                ):
+                                    success, message = stop_call_isolated()
+                                    if success:
+                                        st.success(f"📴 {message}")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
+                
+                with col2:
+                    st.subheader("📊 Call Center Stats")
+                    
+                    # Agent status overview
+                    st.markdown("### 👥 Human Agent Status")
+                    for agent_id, agent_info in CALL_CENTER_AGENTS.items():
                         status_color = {
                             "Available": "🟢",
                             "On Call": "🔴", 
@@ -742,48 +1129,100 @@ else:
                         }.get(agent_info["status"], "⚪")
                         
                         st.markdown(f"""
-                        <div class="team-card">
-                            <h4>{status_color} {agent_info['name']}</h4>
-                            <p><strong>ID:</strong> {agent_id}</p>
-                            <p><strong>Status:</strong> {agent_info['status']}</p>
-                            <p><strong>Team:</strong> {agent_info['team']}</p>
-                            <p><strong>Calls Today:</strong> {agent_info['calls_today']}</p>
+                        <div style="background: rgba(102, 126, 234, 0.1); padding: 0.5rem; border-radius: 5px; margin: 0.5rem 0;">
+                            <strong>{status_color} {agent_info['name']}</strong><br>
+                            <small>Status: {agent_info['status']} | Calls: {agent_info['calls_today']}</small>
                         </div>
                         """, unsafe_allow_html=True)
-                
-                # Call management interface
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.subheader("📞 Call Management")
                     
-                    # Customer selection for call
-                    selected_customer = st.selectbox("👤 Select Customer for Call", 
-                                                   customers_df["Name"].tolist() if not customers_df.empty else ["Sample Customer"])
-                    selected_agent = st.selectbox("👨‍💼 Assign Agent", 
-                                                 [f"{agent_id} - {info['name']}" for agent_id, info in CALL_CENTER_AGENTS.items()])
+                    # Call metrics
+                    st.markdown("### 📈 Call Metrics")
+                    total_ai_calls = len(st.session_state.call_history)
+                    total_human_calls = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
+                    available_agents = len([a for a in CALL_CENTER_AGENTS.values() if a["status"] == "Available"])
                     
-                    # Call controls
-                    col1_ctrl, col2_ctrl, col3_ctrl = st.columns(3)
-                    
-                    with col1_ctrl:
-                        if st.button("📞 Start Call", type="primary"):
-                            st.success(f"🟢 Call initiated by {st.session_state.user_info['name']}")
-                    
-                    with col2_ctrl:
-                        if st.button("⏹️ End Call"):
-                            st.warning("🔴 Call ended")
-                    
-                    with col3_ctrl:
-                        if st.button("⏸️ Hold"):
-                            st.info("⏸️ Call on hold")
-                
-                with col2:
-                    st.subheader("📊 Call Stats")
-                    total_calls = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
-                    st.metric("📞 Total Calls Today", total_calls)
-                    st.metric("👥 Available Agents", len([a for a in CALL_CENTER_AGENTS.values() if a["status"] == "Available"]))
+                    st.metric("🤖 AI Calls Today", total_ai_calls)
+                    st.metric("👥 Human Calls Today", total_human_calls)
+                    st.metric("✅ Available Agents", available_agents)
                     st.metric("🎧 Your Role", st.session_state.user_info['role'])
+                
+                # Call history section
+                st.subheader("📞 Recent Call History")
+                if st.session_state.call_history:
+                    # Display recent calls in a table format
+                    history_df = pd.DataFrame(st.session_state.call_history[-10:])  # Last 10 calls
+                    st.dataframe(history_df, use_container_width=True)
+                    
+                    # Call history analytics
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Calls by agent type
+                        agent_counts = {}
+                        for call in st.session_state.call_history:
+                            agent_id = call['assistant_id']
+                            agent_name = next((info['name'] for info in STATIC_AGENTS.values() if info['id'] == agent_id), agent_id)
+                            agent_counts[agent_name] = agent_counts.get(agent_name, 0) + 1
+                        
+                        if agent_counts:
+                            fig = px.pie(
+                                values=list(agent_counts.values()), 
+                                names=list(agent_counts.keys()),
+                                title="Calls by AI Agent Type"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        # Calls over time
+                        if len(st.session_state.call_history) > 1:
+                            history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
+                            calls_by_hour = history_df.groupby(history_df['timestamp'].dt.hour).size().reset_index()
+                            calls_by_hour.columns = ['Hour', 'Calls']
+                            
+                            fig = px.bar(calls_by_hour, x='Hour', y='Calls', title="Calls by Hour")
+                            st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No call history yet. Start your first AI-powered call!")
+                
+                # Live process output
+                if st.session_state.call_active:
+                    st.subheader("📝 Live Call Process Output")
+                    
+                    # Try to read process output
+                    if st.session_state.current_process:
+                        try:
+                            # Read available output
+                            output = st.session_state.current_process.stdout.readline()
+                            if output:
+                                timestamp = datetime.now().strftime('%H:%M:%S')
+                                st.session_state.call_logs.append(f"[{timestamp}] {output.strip()}")
+                                
+                                # Keep only last 10 logs
+                                if len(st.session_state.call_logs) > 10:
+                                    st.session_state.call_logs = st.session_state.call_logs[-10:]
+                        except:
+                            pass
+                    
+                    # Display logs
+                    if st.session_state.call_logs:
+                        for log in st.session_state.call_logs:
+                            st.text(log)
+                    
+                    # Auto-refresh for live updates
+                    time.sleep(2)
+                    st.rerun()
+                
+                # Instructions
+                st.markdown("---")
+                st.markdown("""
+                💡 **Instructions:** 
+                - Select an AI agent above based on your call purpose
+                - Optionally select a customer from your CRM database
+                - Enter your name (defaults to your logged-in name)
+                - Click 'Call' to start an AI-powered conversation
+                - Use 'Stop Call' or emergency controls to end the call
+                - All calls are logged with full context including customer information
+                """)
             
             # --- ANALYTICS TAB ---
             with tab9:
@@ -810,11 +1249,11 @@ else:
                     ''', unsafe_allow_html=True)
                 
                 with col3:
-                    total_calls = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
+                    total_ai_calls = len(st.session_state.call_history)
                     st.markdown(f'''
                     <div class="metric-card">
-                        <h3>📞 Total Calls</h3>
-                        <h2>{total_calls}</h2>
+                        <h3>🤖 AI Calls</h3>
+                        <h2>{total_ai_calls}</h2>
                     </div>
                     ''', unsafe_allow_html=True)
                 
@@ -830,6 +1269,42 @@ else:
                 # User activity analytics
                 st.subheader("👤 User Activity")
                 st.markdown(f"**Current Session:** {st.session_state.user_info['name']} ({st.session_state.user_info['role']})")
+                
+                # Call center analytics
+                st.subheader("📞 Call Center Analytics")
+                
+                if st.session_state.call_history:
+                    # Advanced call analytics
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Calls by user
+                        user_calls = {}
+                        for call in st.session_state.call_history:
+                            user = call.get('initiated_by', 'Unknown')
+                            user_calls[user] = user_calls.get(user, 0) + 1
+                        
+                        fig = px.bar(
+                            x=list(user_calls.keys()), 
+                            y=list(user_calls.values()),
+                            title="Calls by User",
+                            labels={'x': 'User', 'y': 'Number of Calls'}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        # Call status distribution
+                        status_counts = {}
+                        for call in st.session_state.call_history:
+                            status = call.get('status', 'unknown')
+                            status_counts[status] = status_counts.get(status, 0) + 1
+                        
+                        fig = px.pie(
+                            values=list(status_counts.values()),
+                            names=list(status_counts.keys()),
+                            title="Call Status Distribution"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
                 
                 # Team performance analytics
                 st.subheader("📈 Team Performance")
@@ -860,7 +1335,9 @@ else:
                             "invoices": invoices_df.to_dict('records') if not invoices_df.empty else [],
                             "price_list": price_list_df.to_dict('records') if not price_list_df.empty else [],
                             "teams": TEAM_STRUCTURE,
-                            "agents": CALL_CENTER_AGENTS,
+                            "call_center_agents": CALL_CENTER_AGENTS,
+                            "ai_agents": STATIC_AGENTS,
+                            "call_history": st.session_state.call_history,
                             "exported_by": st.session_state.user_info['name'],
                             "export_time": datetime.now().isoformat()
                         }
@@ -880,8 +1357,12 @@ else:
                             "total_customers": len(customers_df),
                             "total_invoices": len(invoices_df),
                             "total_team_members": total_team_members,
-                            "total_calls_today": total_calls,
-                            "team_breakdown": team_performance_data
+                            "total_ai_calls": len(st.session_state.call_history),
+                            "team_breakdown": team_performance_data,
+                            "call_analytics": {
+                                "active_call": st.session_state.call_active,
+                                "total_calls": len(st.session_state.call_history)
+                            }
                         }
                         
                         st.download_button(
@@ -892,18 +1373,20 @@ else:
                         )
                 
                 with col3:
-                    if st.button("👥 Export User Data"):
-                        user_data = {
-                            "current_user": st.session_state.user_info,
-                            "all_users": DEMO_ACCOUNTS,
-                            "teams": TEAM_STRUCTURE,
+                    if st.button("📞 Export Call Data"):
+                        call_data = {
+                            "call_history": st.session_state.call_history,
+                            "ai_agents": STATIC_AGENTS,
+                            "human_agents": CALL_CENTER_AGENTS,
+                            "current_call_active": st.session_state.call_active,
+                            "exported_by": st.session_state.user_info['name'],
                             "export_time": datetime.now().isoformat()
                         }
                         
                         st.download_button(
-                            label="Download User Data (JSON)",
-                            data=json.dumps(user_data, indent=2),
-                            file_name=f"user_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            label="Download Call Data (JSON)",
+                            data=json.dumps(call_data, indent=2),
+                            file_name=f"call_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                             mime="application/json"
                         )
         
@@ -930,11 +1413,19 @@ else:
                     </div>
                     <div>
                         <p>👥 Team Management ({total_members} members)</p>
-                        <p>📞 Call Center Integration</p>
-                        <p>🤖 AI Chat System</p>
-                        <p>📥 Data Export Tools</p>
+                        <p>📞 AI-Powered Call Center</p>
+                        <p>🤖 Advanced AI Chat System</p>
+                        <p>📥 Comprehensive Data Export</p>
                     </div>
                 </div>
+            </div>
+            
+            <div style="background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
+                <h4>🚀 New: Advanced Call Center Features</h4>
+                <p>✨ AI-powered customer calls with VAPI integration</p>
+                <p>🎯 Customer context integration for personalized calls</p>
+                <p>📊 Real-time call monitoring and analytics</p>
+                <p>🔄 Seamless integration with CRM customer database</p>
             </div>
         </div>
         """.format(
@@ -943,3 +1434,4 @@ else:
             user_team=st.session_state.user_info['team'],
             total_members=sum(len(team["members"]) for team in TEAM_STRUCTURE.values())
         ), unsafe_allow_html=True)
+
