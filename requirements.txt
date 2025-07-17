@@ -64,8 +64,7 @@ scipy>=1.11.0
 # Optional: Additional PDF Processing
 fpdf2>=2.7.0
 
-# Optional: Enhanced Data Grid
-streamlit-dataframe-editor>=0.1.0
+
 
 # Development and Testing (optional)
 pytest>=7.4.0
