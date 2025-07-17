@@ -86,22 +86,17 @@ CALL_CENTER_AGENTS = {
 # --- AI AGENTS CONFIGURATION ---
 STATIC_AGENTS = {
     "Customer Support": {
-        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
+        "id": "7b2b8b86-5caa-4f28-8c6b-e7d3d0404f06",
         "name": "Customer Support Agent",
         "description": "Resolves product issues, answers questions, and ensures satisfying customer experiences with technical knowledge and empathy."
     },
     "Sales Assistant": {
-        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
+        "id": "232f3d9c-18b3-4963-bdd9-e7de3be156ae",
         "name": "Sales Assistant",
         "description": "Identifies qualified prospects, understands business challenges, and connects them with appropriate sales representatives."
     },
-    "Appointment Scheduler": {
-        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
-        "name": "Appointment Scheduler",
-        "description": "Efficiently books, confirms, reschedules, or cancels appointments while providing clear service information."
-    },
     "Laundry Specialist": {
-        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
+        "id": "41fe59e1-829f-4936-8ee5-eef2bb1287fe",
         "name": "Laundry Specialist",
         "description": "Expert in laundry services, pricing, and scheduling. Handles customer inquiries about cleaning services and special requests."
     }
@@ -269,7 +264,7 @@ if __name__ == "__main__":
    
     return script_path
 
-def start_call_isolated(assistant_id, user_name=None, customer_info=None):
+def start_call_isolated(assistant_id, user_name=None):
     try:
         # Get API key from secrets
         try:
@@ -300,14 +295,8 @@ def start_call_isolated(assistant_id, user_name=None, customer_info=None):
         }
        
         # Add user context
-        variable_values = {}
         if user_name:
-            variable_values["name"] = user_name
-        if customer_info:
-            variable_values.update(customer_info)
-        
-        if variable_values:
-            config["overrides"]["variableValues"] = variable_values
+            config["overrides"]["variableValues"] = {"name": user_name}
        
         config_json = json.dumps(config)
        
@@ -330,7 +319,6 @@ def start_call_isolated(assistant_id, user_name=None, customer_info=None):
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'assistant_id': assistant_id,
             'user_name': user_name,
-            'customer_info': customer_info,
             'status': 'started',
             'process_id': process.pid,
             'initiated_by': st.session_state.user_info['name']
@@ -1010,7 +998,7 @@ else:
             
             # --- ADVANCED CALL CENTER TAB ---
             with tab8:
-                st.subheader("📞 Advanced Call Center with AI Agents")
+                st.subheader("📞 AI Agent Caller")
                 
                 # Call status indicator
                 call_active, status_msg = check_call_status()
@@ -1018,17 +1006,13 @@ else:
                     st.markdown(f'''
                     <div class="call-status-active">
                         <h3>🟢 Call Currently Active</h3>
-                        <p>{status_msg}</p>
                         <p>Process ID: {st.session_state.current_process.pid if st.session_state.current_process else 'Unknown'}</p>
-                        <p>Initiated by: {st.session_state.user_info['name']}</p>
                     </div>
                     ''', unsafe_allow_html=True)
                 else:
-                    st.markdown(f'''
+                    st.markdown('''
                     <div class="call-status-inactive">
-                        <h3>🔴 No Active Calls</h3>
-                        <p>{status_msg}</p>
-                        <p>Ready to initiate new calls</p>
+                        <h3>🔴 No Active Call</h3>
                     </div>
                     ''', unsafe_allow_html=True)
                 
@@ -1036,63 +1020,23 @@ else:
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
-                    st.subheader("🤖 AI Agent Selection")
+                    st.subheader("🤖 Select Agent")
                     
-                    # Display AI agent cards
+                    # Display agent cards
                     for agent_key, agent_info in STATIC_AGENTS.items():
-                        with st.expander(f"🤖 {agent_info['name']}", expanded=False):
-                            st.markdown(f"""
-                            <div class="agent-card">
-                                <h4>{agent_info['name']}</h4>
-                                <p><strong>Description:</strong> {agent_info['description']}</p>
-                                <p><strong>Agent ID:</strong> {agent_info['id']}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
+                        with st.expander(f"{agent_info['name']}", expanded=False):
+                            st.write(f"**Description:** {agent_info['description']}")
+                            st.write(f"**Agent ID:** {agent_info['id']}")
                             
-                            # Customer selection and user input
-                            col_customer, col_user = st.columns(2)
+                            # User name input (optional)
+                            user_name = st.text_input(f"Your Name (optional):", key=f"name_{agent_key}")
                             
-                            with col_customer:
-                                selected_customer = st.selectbox(
-                                    "👤 Select Customer (optional):", 
-                                    ["None"] + (customers_df["Name"].tolist() if not customers_df.empty else []),
-                                    key=f"customer_{agent_key}"
-                                )
-                            
-                            with col_user:
-                                user_name = st.text_input(
-                                    f"Your Name:", 
-                                    value=st.session_state.user_info['name'],
-                                    key=f"name_{agent_key}"
-                                )
-                            
-                            # Prepare customer info
-                            customer_info = None
-                            if selected_customer != "None" and not customers_df.empty:
-                                customer_row = customers_df[customers_df["Name"] == selected_customer].iloc[0]
-                                customer_info = {
-                                    "customer_name": customer_row.get("Name", ""),
-                                    "customer_phone": customer_row.get("Phone Number", ""),
-                                    "customer_email": customer_row.get("Email", ""),
-                                    "customer_preference": customer_row.get("Preference", ""),
-                                    "customer_notes": customer_row.get("Notes", "")
-                                }
-                            
-                            # Call control buttons
+                            # Call buttons
                             col_start, col_stop = st.columns(2)
                             
                             with col_start:
-                                if st.button(
-                                    f"📞 Call with {agent_key}", 
-                                    key=f"call_{agent_key}", 
-                                    disabled=st.session_state.call_active,
-                                    type="primary"
-                                ):
-                                    success, message = start_call_isolated(
-                                        agent_info["id"], 
-                                        user_name, 
-                                        customer_info
-                                    )
+                                if st.button(f"📞 Call {agent_key}", key=f"call_{agent_key}", disabled=st.session_state.call_active):
+                                    success, message = start_call_isolated(agent_info["id"], user_name)
                                     if success:
                                         st.success(f"✅ {message}")
                                         st.balloons()
@@ -1102,11 +1046,7 @@ else:
                                         st.error(f"❌ {message}")
                             
                             with col_stop:
-                                if st.button(
-                                    f"⛔ Stop Call", 
-                                    key=f"stop_{agent_key}", 
-                                    disabled=not st.session_state.call_active
-                                ):
+                                if st.button(f"⛔ Stop Call", key=f"stop_{agent_key}", disabled=not st.session_state.call_active):
                                     success, message = stop_call_isolated()
                                     if success:
                                         st.success(f"📴 {message}")
@@ -1116,77 +1056,20 @@ else:
                                         st.error(f"❌ {message}")
                 
                 with col2:
-                    st.subheader("📊 Call Center Stats")
-                    
-                    # Agent status overview
-                    st.markdown("### 👥 Human Agent Status")
-                    for agent_id, agent_info in CALL_CENTER_AGENTS.items():
-                        status_color = {
-                            "Available": "🟢",
-                            "On Call": "🔴", 
-                            "Break": "🟡",
-                            "Training": "🔵"
-                        }.get(agent_info["status"], "⚪")
-                        
-                        st.markdown(f"""
-                        <div style="background: rgba(102, 126, 234, 0.1); padding: 0.5rem; border-radius: 5px; margin: 0.5rem 0;">
-                            <strong>{status_color} {agent_info['name']}</strong><br>
-                            <small>Status: {agent_info['status']} | Calls: {agent_info['calls_today']}</small>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    # Call metrics
-                    st.markdown("### 📈 Call Metrics")
-                    total_ai_calls = len(st.session_state.call_history)
-                    total_human_calls = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
-                    available_agents = len([a for a in CALL_CENTER_AGENTS.values() if a["status"] == "Available"])
-                    
-                    st.metric("🤖 AI Calls Today", total_ai_calls)
-                    st.metric("👥 Human Calls Today", total_human_calls)
-                    st.metric("✅ Available Agents", available_agents)
-                    st.metric("🎧 Your Role", st.session_state.user_info['role'])
+                    st.subheader("📞 Call History")
+                    if st.session_state.call_history:
+                        for call in reversed(st.session_state.call_history[-5:]):
+                            status_icon = {"started": "🟡", "stopped": "✅", "ended": "🔴"}.get(call['status'], "❓")
+                            st.write(f"{status_icon} {call['timestamp']}")
+                            st.caption(f"Agent: {call['assistant_id']}")
+                            st.caption(f"Status: {call['status']}")
+                            st.write("---")
+                    else:
+                        st.info("No calls made yet.")
                 
-                # Call history section
-                st.subheader("📞 Recent Call History")
-                if st.session_state.call_history:
-                    # Display recent calls in a table format
-                    history_df = pd.DataFrame(st.session_state.call_history[-10:])  # Last 10 calls
-                    st.dataframe(history_df, use_container_width=True)
-                    
-                    # Call history analytics
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # Calls by agent type
-                        agent_counts = {}
-                        for call in st.session_state.call_history:
-                            agent_id = call['assistant_id']
-                            agent_name = next((info['name'] for info in STATIC_AGENTS.values() if info['id'] == agent_id), agent_id)
-                            agent_counts[agent_name] = agent_counts.get(agent_name, 0) + 1
-                        
-                        if agent_counts:
-                            fig = px.pie(
-                                values=list(agent_counts.values()), 
-                                names=list(agent_counts.keys()),
-                                title="Calls by AI Agent Type"
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
-                        # Calls over time
-                        if len(st.session_state.call_history) > 1:
-                            history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
-                            calls_by_hour = history_df.groupby(history_df['timestamp'].dt.hour).size().reset_index()
-                            calls_by_hour.columns = ['Hour', 'Calls']
-                            
-                            fig = px.bar(calls_by_hour, x='Hour', y='Calls', title="Calls by Hour")
-                            st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No call history yet. Start your first AI-powered call!")
-                
-                # Live process output
+                # Live logs
                 if st.session_state.call_active:
-                    st.subheader("📝 Live Call Process Output")
+                    st.subheader("📝 Live Process Output")
                     
                     # Try to read process output
                     if st.session_state.current_process:
@@ -1208,21 +1091,13 @@ else:
                         for log in st.session_state.call_logs:
                             st.text(log)
                     
-                    # Auto-refresh for live updates
+                    # Auto-refresh
                     time.sleep(2)
                     st.rerun()
                 
-                # Instructions
+                # Footer
                 st.markdown("---")
-                st.markdown("""
-                💡 **Instructions:** 
-                - Select an AI agent above based on your call purpose
-                - Optionally select a customer from your CRM database
-                - Enter your name (defaults to your logged-in name)
-                - Click 'Call' to start an AI-powered conversation
-                - Use 'Stop Call' or emergency controls to end the call
-                - All calls are logged with full context including customer information
-                """)
+                st.markdown("💡 **Instructions:** Select an agent above, optionally enter your name, and click 'Call' to start. Use 'Stop Call' or emergency controls to end the call.")
             
             # --- ANALYTICS TAB ---
             with tab9:
