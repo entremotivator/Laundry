@@ -466,7 +466,7 @@ initialize_vapi_session_state()
 
 # --- LOGIN PAGE ---
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-header">🧼 lil J's Auto Laundry </div>', unsafe_allow_html=True)
+    st.markdown("<div class='main-header'>🧼 lil J's Auto Laundry </div>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     
