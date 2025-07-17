@@ -1,10 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import requests
+import weasyprint
+from vapi_python import Vapi
 import gspread
 from google.oauth2.service_account import Credentials
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 import json
-import requests
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
@@ -24,6 +27,103 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- UTILITY FUNCTIONS USING ALL LIBRARIES ---
+def calculate_analytics_with_numpy(data):
+    """Use numpy for advanced analytics calculations"""
+    if not data:
+        return {}
+    
+    values = np.array([float(item.get('amount', 0)) for item in data])
+    return {
+        'mean': np.mean(values),
+        'std': np.std(values),
+        'median': np.median(values),
+        'total': np.sum(values),
+        'percentile_75': np.percentile(values, 75),
+        'percentile_25': np.percentile(values, 25)
+    }
+
+def fetch_external_data_with_requests(url=None):
+    """Use requests library for external API calls"""
+    try:
+        # Example API call (can be customized)
+        if not url:
+            url = "https://api.exchangerate-api.com/v4/latest/USD"
+        
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
+
+def generate_pdf_report_with_weasyprint(html_content, filename):
+    """Use WeasyPrint to generate PDF reports"""
+    try:
+        # Create a simple HTML template
+        html_template = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>CRM Report</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 40px; }}
+                h1 {{ color: #2E86AB; }}
+                .header {{ border-bottom: 2px solid #2E86AB; padding-bottom: 10px; }}
+                .content {{ margin-top: 20px; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                th {{ background-color: #f2f2f2; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>🧼 Auto Laundry CRM Report</h1>
+                <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </div>
+            <div class="content">
+                {html_content}
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Generate PDF using WeasyPrint
+        pdf_path = f"/tmp/{filename}.pdf"
+        weasyprint.HTML(string=html_template).write_pdf(pdf_path)
+        return pdf_path
+    except Exception as e:
+        return f"Error generating PDF: {str(e)}"
+
+def create_vapi_client(api_key):
+    """Create VAPI client using vapi_python library"""
+    try:
+        return Vapi(api_key=api_key)
+    except Exception as e:
+        return None
+
+def process_dataframe_with_pandas(data):
+    """Use pandas for advanced data processing"""
+    if not data:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(data)
+    
+    # Add calculated columns using pandas
+    if 'amount' in df.columns:
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+        df['amount_category'] = pd.cut(df['amount'], 
+                                     bins=[0, 50, 100, 200, float('inf')], 
+                                     labels=['Low', 'Medium', 'High', 'Premium'])
+    
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df['month'] = df['date'].dt.month
+        df['year'] = df['date'].dt.year
+        df['day_of_week'] = df['date'].dt.day_name()
+    
+    return df
 
 # --- DEMO ACCOUNTS ---
 DEMO_ACCOUNTS = {
@@ -1054,73 +1154,75 @@ else:
             with tab8:
                 st.subheader("📞 AI Agent Caller - Process Isolated")
                 
-                # Configuration section
-                col1, col2 = st.columns([2, 1])
+                # Get API key from secrets
+                try:
+                    api_key = st.secrets["VAPI_API_KEY"]
+                    st.success("✅ VAPI API Key loaded from secrets")
+                except KeyError:
+                    st.error("❌ VAPI_API_KEY not found in secrets. Please add it to your Streamlit secrets.")
+                    st.info("Add this to your Streamlit app secrets: `VAPI_API_KEY = 'your_api_key_here'`")
+                    api_key = None
                 
-                with col1:
-                    st.subheader("🔧 Configuration")
-                    api_key = st.text_input("🔑 VAPI API Key", type="password", help="Enter your VAPI API key")
-                
-                with col2:
-                    # Status information
-                    st.subheader("📊 Status")
-                    call_active, status_msg = check_call_status()
-                    st.write(f"**Call Active:** {'✅ Yes' if call_active else '❌ No'}")
-                    st.write(f"**Total Calls:** {len(st.session_state.call_history)}")
+                if api_key:
+                    # Configuration section
+                    col1, col2 = st.columns([2, 1])
                     
-                    if st.session_state.current_process:
-                        st.write(f"**Process ID:** {st.session_state.current_process.pid}")
+                    with col2:
+                        # Status information
+                        st.subheader("📊 Status")
+                        call_active, status_msg = check_call_status()
+                        st.write(f"**Call Active:** {'✅ Yes' if call_active else '❌ No'}")
+                        st.write(f"**Total Calls:** {len(st.session_state.call_history)}")
+                        
+                        if st.session_state.current_process:
+                            st.write(f"**Process ID:** {st.session_state.current_process.pid}")
+                        
+                        if st.session_state.last_error:
+                            st.error(f"**Last Error:** {st.session_state.last_error}")
                     
-                    if st.session_state.last_error:
-                        st.error(f"**Last Error:** {st.session_state.last_error}")
-                
-                # Emergency controls
-                st.subheader("🚨 Emergency Controls")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("🔄 Reset All", help="Reset all session data"):
-                        if st.session_state.current_process:
-                            try:
-                                st.session_state.current_process.kill()
-                            except:
-                                pass
-                        # Reset only call center related session state
-                        st.session_state.call_active = False
-                        st.session_state.call_history = []
-                        st.session_state.current_process = None
-                        st.session_state.show_descriptions = False
-                        st.session_state.last_error = None
-                        st.session_state.call_logs = []
-                        st.success("Call center reset!")
-                        st.rerun()
-                
-                with col2:
-                    if st.button("💀 Force Kill Process", help="Force kill the current call process"):
-                        if st.session_state.current_process:
-                            try:
-                                st.session_state.current_process.kill()
-                                st.session_state.current_process = None
-                                st.session_state.call_active = False
-                                st.success("Process killed")
-                            except Exception as e:
-                                st.error(f"Error killing process: {e}")
-                
-                with col3:
-                    if st.button("ℹ️ Toggle Agent Types"):
-                        st.session_state.show_descriptions = not st.session_state.show_descriptions
-                
-                # Show Agent Type Descriptions
-                if st.session_state.show_descriptions:
-                    st.subheader("📚 Agent Type Descriptions")
-                    for role, desc in AGENT_TYPES.items():
-                        with st.expander(role):
-                            st.write(desc)
-                
-                # Main interface
-                if not api_key:
-                    st.warning("⚠️ Please enter your VAPI API key above to get started.")
-                else:
+                    # Emergency controls
+                    st.subheader("🚨 Emergency Controls")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        if st.button("🔄 Reset All", help="Reset all session data"):
+                            if st.session_state.current_process:
+                                try:
+                                    st.session_state.current_process.kill()
+                                except:
+                                    pass
+                            # Reset only call center related session state
+                            st.session_state.call_active = False
+                            st.session_state.call_history = []
+                            st.session_state.current_process = None
+                            st.session_state.show_descriptions = False
+                            st.session_state.last_error = None
+                            st.session_state.call_logs = []
+                            st.success("Call center reset!")
+                            st.rerun()
+                    
+                    with col2:
+                        if st.button("💀 Force Kill Process", help="Force kill the current call process"):
+                            if st.session_state.current_process:
+                                try:
+                                    st.session_state.current_process.kill()
+                                    st.session_state.current_process = None
+                                    st.session_state.call_active = False
+                                    st.success("Process killed")
+                                except Exception as e:
+                                    st.error(f"Error killing process: {e}")
+                    
+                    with col3:
+                        if st.button("ℹ️ Toggle Agent Types"):
+                            st.session_state.show_descriptions = not st.session_state.show_descriptions
+                    
+                    # Show Agent Type Descriptions
+                    if st.session_state.show_descriptions:
+                        st.subheader("📚 Agent Type Descriptions")
+                        for role, desc in AGENT_TYPES.items():
+                            with st.expander(role):
+                                st.write(desc)
+                    
                     # Agent Setup
                     st.subheader("🧠 Define Your Assistants")
                     agent_configs = []
@@ -1166,16 +1268,24 @@ else:
                             if st.button("🔄 Refresh Logs"):
                                 pass  # Just refresh the page
                             
-                            # Try to read process output
+                            # Try to read process output (cloud-compatible)
                             try:
-                                # Non-blocking read of process output
-                                import select
-                                if hasattr(select, 'select'):
-                                    ready, _, _ = select.select([st.session_state.current_process.stdout], [], [], 0)
-                                    if ready:
-                                        output = st.session_state.current_process.stdout.readline()
+                                # Check if process is still running
+                                if st.session_state.current_process.poll() is None:
+                                    # Process is still running, try to read output
+                                    try:
+                                        # Use a more cloud-compatible approach
+                                        import fcntl
+                                        import os
+                                        fd = st.session_state.current_process.stdout.fileno()
+                                        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+                                        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                                        output = st.session_state.current_process.stdout.read()
                                         if output:
                                             st.session_state.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: {output.strip()}")
+                                    except:
+                                        # Fallback for cloud environments
+                                        pass
                             except:
                                 pass
                             
