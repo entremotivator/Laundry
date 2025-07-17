@@ -1,89 +1,67 @@
-# Auto Laundry CRM Pro - Enhanced with AI Call Center
-# Complete requirements for all features
-
-# Core Streamlit Framework
+# === Core Streamlit Framework ===
 streamlit>=1.28.0
 streamlit-aggrid>=0.3.4
 
-# Essential Data Processing and Analysis
+# === Essential Data Processing and Analysis ===
 pandas>=2.0.0
 numpy>=1.24.0
 
-# Google Sheets Integration
+# === Google Sheets Integration ===
 gspread>=5.10.0
 google-auth>=2.22.0
 google-auth-oauthlib>=1.0.0
 google-auth-httplib2>=0.1.0
 
-# Data Visualization and Charts
+# === Data Visualization and Charts ===
 plotly>=5.15.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 
-# API and Web Requests
+# === API and Web Requests ===
 requests>=2.31.0
 urllib3>=2.0.0
 
-# AI Voice Integration (VAPI) - Correct package name
-vapi_python>=0.1.0
+# === AI Voice Integration (VAPI) ===
+vapi-python>=0.1.0  # ✅ Correct PyPI name: use dash, not underscore
 
-# PDF Generation and Processing
+# === PDF Generation and Processing ===
 weasyprint
 reportlab>=4.0.0
 
-# Date and Time Handling
+# === Date and Time Handling ===
 python-dateutil>=2.8.0
 
-# JSON and Data Serialization
+# === JSON and Data Serialization ===
 jsonschema>=4.18.0
 
-# File Processing and I/O
+# === File Processing and I/O ===
 openpyxl>=3.1.0
 xlsxwriter>=3.1.0
 PyPDF2>=3.0.0
 
-# Authentication and Security
+# === Authentication and Security ===
 cryptography>=41.0.0
 pyjwt>=2.8.0
 
-# Environment and Configuration
+# === Environment and Configuration ===
 python-dotenv>=1.0.0
 
-# Process Management (for call center)
+# === Process Management (for Call Center) ===
 psutil>=5.9.0
 
-# Optional: Enhanced UI Components
+# === Optional: Enhanced UI Components ===
 streamlit-option-menu>=0.3.6
 streamlit-elements>=0.1.0
 streamlit-chat>=0.1.1
 
-# Optional: Advanced Analytics
+# === Optional: Advanced Analytics ===
 scikit-learn>=1.3.0
 scipy>=1.11.0
 
-# Optional: Additional PDF Processing
+# === Optional: Additional PDF Processing ===
 fpdf2>=2.7.0
 
-
-
-# Development and Testing (optional)
+# === Optional: Development and Testing ===
 pytest>=7.4.0
 black>=23.7.0
 flake8>=6.0.0
-
-# System Dependencies Notes:
-# For Ubuntu/Debian systems, you may need to install:
-# sudo apt-get update
-# sudo apt-get install -y python3-dev python3-pip
-# sudo apt-get install -y libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libffi-dev shared-mime-info
-
-# For voice processing (if needed):
-# sudo apt-get install -y portaudio19-dev python3-pyaudio
-# pyaudio>=0.2.11
-
-# For advanced PDF processing (if needed):
-# sudo apt-get install -y poppler-utils
-# pdf2image>=1.16.0
-
-# Note: Python 3.8+ is recommended for full compatibility
-
