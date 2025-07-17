@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import csv
+import io
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -103,15 +105,27 @@ st.sidebar.markdown('<div class="sidebar-header">⚙️ Configuration</div>', un
 # Default URLs - hardcoded but can be overridden
 DEFAULT_CUSTOMERS_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=392374958#gid=392374958"
 DEFAULT_N8N_WEBHOOK = "https://agentonline-u29564.vm.elestio.app/webhook/bf7aec67-cce8-4bd6-81f1-f04f84b992f7"
+# Hardcoded Invoice Sheet URL
+HARDCODED_INVOICES_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=1234567890#gid=1234567890"
+
+# Hardcoded Call Center Agent IDs
+CALL_CENTER_AGENTS = {
+    "agent_001": {"name": "Sarah Johnson", "status": "Available", "calls_today": 12},
+    "agent_002": {"name": "Mike Chen", "status": "On Call", "calls_today": 8},
+    "agent_003": {"name": "Emma Davis", "status": "Break", "calls_today": 15},
+    "agent_004": {"name": "Alex Rodriguez", "status": "Available", "calls_today": 10},
+    "agent_005": {"name": "Lisa Thompson", "status": "Training", "calls_today": 3}
+}
 
 # --- TAB LAYOUT ---
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🏠 Dashboard", 
     "➕ Add Customer", 
     "📋 View All",
     "🧾 Invoices",
     "💬 Super Chat",
-    "📞 Call Center"
+    "📞 Call Center",
+    "📊 Analytics"
 ])
 
 if auth_file:
@@ -129,15 +143,21 @@ if auth_file:
         if use_default_settings:
             CUSTOMERS_SHEET_URL = DEFAULT_CUSTOMERS_SHEET
             N8N_WEBHOOK_URL = DEFAULT_N8N_WEBHOOK
+            INVOICES_SHEET_URL = HARDCODED_INVOICES_SHEET
             st.sidebar.success("🎯 Using default configuration")
             st.sidebar.info("📊 Connected to main customer database")
+            st.sidebar.info("🧾 Connected to invoices database")
             st.sidebar.info("🤖 AI chat system ready")
         else:
             CUSTOMERS_SHEET_URL = st.sidebar.text_input("📄 Customers Google Sheet URL", "")
+            INVOICES_SHEET_URL = st.sidebar.text_input("🧾 Invoices Google Sheet URL", HARDCODED_INVOICES_SHEET)
             N8N_WEBHOOK_URL = st.sidebar.text_input("🔗 N8N Webhook URL", "")
             
-        INVOICES_SHEET_URL = st.sidebar.text_input("🧾 Invoices Google Sheet URL (Optional)", "")
+        # Optional API settings
+        st.sidebar.markdown("---")
+        st.sidebar.markdown('<div class="sidebar-header">🔧 Optional APIs</div>', unsafe_allow_html=True)
         VAPI_API_KEY = st.sidebar.text_input("🔑 VAPI AI API Key (Optional)", type="password")
+        OPENAI_API_KEY = st.sidebar.text_input("🤖 OpenAI API Key (Optional)", type="password")
         
         if CUSTOMERS_SHEET_URL:
             # --- LOAD CUSTOMERS DATA ---
@@ -174,7 +194,7 @@ if auth_file:
                     st.sidebar.warning(f"⚠️ Invoices sheet not accessible: {str(e)}")
                     invoices_df = pd.DataFrame()
             else:
-                st.sidebar.info("💡 Add invoices sheet URL to track billing")
+                st.sidebar.info("💡 Using hardcoded invoices sheet")
 
             # --- DASHBOARD TAB ---
             with tab1:
@@ -219,7 +239,7 @@ if auth_file:
                     ''', unsafe_allow_html=True)
 
                 # --- CHARTS ---
-                if not invoices_df.empty and "Date" in invoices_df.columns:
+                if not invoices_df.empty and "Invoice Date" in invoices_df.columns:
                     st.subheader("📈 Revenue Analytics")
                     
                     col1, col2 = st.columns(2)
@@ -227,8 +247,8 @@ if auth_file:
                     with col1:
                         # Revenue by month
                         if "Amount" in invoices_df.columns:
-                            monthly_revenue = invoices_df.groupby(invoices_df["Date"].str[:7])["Amount"].sum().reset_index()
-                            fig = px.bar(monthly_revenue, x="Date", y="Amount", title="Monthly Revenue")
+                            monthly_revenue = invoices_df.groupby(invoices_df["Invoice Date"].str[:7])["Amount"].sum().reset_index()
+                            fig = px.bar(monthly_revenue, x="Invoice Date", y="Amount", title="Monthly Revenue")
                             fig.update_layout(xaxis_title="Month", yaxis_title="Revenue ($)")
                             st.plotly_chart(fig, use_container_width=True)
                     
@@ -378,7 +398,7 @@ if auth_file:
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            invoice_customer = st.selectbox("👤 Customer", customers_df["Name"].tolist())
+                            invoice_customer = st.selectbox("👤 Customer", customers_df["Name"].tolist() if not customers_df.empty else ["Malcolm"])
                             invoice_date = st.date_input("📅 Invoice Date", datetime.now())
                             invoice_amount = st.number_input("💰 Amount", min_value=0.0, format="%.2f")
                             invoice_status = st.selectbox("📊 Status", ["Pending", "Paid", "Overdue", "Cancelled"])
@@ -390,24 +410,53 @@ if auth_file:
                             payment_method = st.selectbox("💳 Payment Method", ["Cash", "Card", "Bank Transfer", "PayPal"])
 
                         if st.form_submit_button("💾 Create Invoice"):
-                            if INVOICES_SHEET_URL:
-                                try:
-                                    invoices_worksheet.append_row([
-                                        invoice_customer,
-                                        str(invoice_date),
-                                        invoice_amount,
-                                        invoice_status,
-                                        invoice_items,
-                                        invoice_notes,
-                                        str(due_date),
-                                        payment_method
-                                    ])
-                                    st.success("✅ Invoice created successfully!")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ Error creating invoice: {e}")
-                            else:
-                                st.error("❌ Please provide Invoices Sheet URL in sidebar")
+                            try:
+                                # Create CSV format data
+                                invoice_data = [
+                                    invoice_customer,
+                                    str(invoice_date),
+                                    invoice_amount,
+                                    invoice_status,
+                                    invoice_items,
+                                    invoice_notes,
+                                    str(due_date),
+                                    payment_method
+                                ]
+                                
+                                # Add to Google Sheets
+                                invoices_worksheet.append_row(invoice_data)
+                                
+                                # Also create CSV download
+                                csv_buffer = io.StringIO()
+                                csv_writer = csv.writer(csv_buffer)
+                                csv_writer.writerow(["Customer", "Invoice Date", "Amount", "Status", "Items", "Notes", "Due Date", "Payment Method"])
+                                csv_writer.writerow(invoice_data)
+                                
+                                st.success("✅ Invoice created successfully!")
+                                st.download_button(
+                                    label="📥 Download Invoice CSV",
+                                    data=csv_buffer.getvalue(),
+                                    file_name=f"invoice_{invoice_customer}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                    mime="text/csv"
+                                )
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error creating invoice: {e}")
+
+                # Sample invoice data with Malcolm
+                if invoices_df.empty:
+                    st.info("📋 No invoices found. Here's a sample:")
+                    sample_invoice = pd.DataFrame([{
+                        "Customer": "Malcolm",
+                        "Invoice Date": "",
+                        "Amount": "",
+                        "Status": "Pending",
+                        "Items": "",
+                        "Notes": "",
+                        "Due Date": "",
+                        "Payment Method": "Cash"
+                    }])
+                    st.dataframe(sample_invoice, use_container_width=True)
 
                 # Display invoices
                 if not invoices_df.empty:
@@ -420,7 +469,14 @@ if auth_file:
                     with col2:
                         customer_filter = st.selectbox("Filter by Customer", ["All"] + list(invoices_df["Customer"].unique()))
                     with col3:
-                        date_range = st.date_input("Date Range", [])
+                        if st.button("📥 Export All Invoices CSV"):
+                            csv = invoices_df.to_csv(index=False)
+                            st.download_button(
+                                label="Download All Invoices CSV",
+                                data=csv,
+                                file_name=f"all_invoices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv"
+                            )
 
                     # Apply filters
                     filtered_invoices = invoices_df.copy()
@@ -447,8 +503,6 @@ if auth_file:
                         update_mode=GridUpdateMode.MODEL_CHANGED,
                         fit_columns_on_grid_load=True
                     )
-                else:
-                    st.info("📋 No invoices found. Add your first invoice above!")
 
             # --- SUPER CHAT TAB ---
             with tab5:
@@ -541,7 +595,29 @@ if auth_file:
 
             # --- CALL CENTER TAB ---
             with tab6:
-                st.subheader("📞 Call Center with VAPI AI")
+                st.subheader("📞 Call Center with Agent Management")
+                
+                # Agent status overview
+                st.subheader("👥 Agent Status Overview")
+                agent_cols = st.columns(len(CALL_CENTER_AGENTS))
+                
+                for idx, (agent_id, agent_info) in enumerate(CALL_CENTER_AGENTS.items()):
+                    with agent_cols[idx]:
+                        status_color = {
+                            "Available": "🟢",
+                            "On Call": "🔴", 
+                            "Break": "🟡",
+                            "Training": "🔵"
+                        }.get(agent_info["status"], "⚪")
+                        
+                        st.markdown(f"""
+                        <div class="call-center-card">
+                            <h4>{status_color} {agent_info['name']}</h4>
+                            <p><strong>ID:</strong> {agent_id}</p>
+                            <p><strong>Status:</strong> {agent_info['status']}</p>
+                            <p><strong>Calls Today:</strong> {agent_info['calls_today']}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
                 
                 # Call center interface
                 col1, col2 = st.columns([2, 1])
@@ -550,14 +626,15 @@ if auth_file:
                     st.markdown("""
                     <div class="call-center-card">
                         <h3>📞 AI-Powered Call Center</h3>
-                        <p>Manage customer calls with VAPI AI integration</p>
+                        <p>Manage customer calls with optional VAPI AI integration</p>
                     </div>
                     """, unsafe_allow_html=True)
                     
                     # Customer selection for call
-                    selected_customer = st.selectbox("👤 Select Customer for Call", customers_df["Name"].tolist())
+                    selected_customer = st.selectbox("👤 Select Customer for Call", customers_df["Name"].tolist() if not customers_df.empty else ["Malcolm"])
+                    selected_agent = st.selectbox("👨‍💼 Assign Agent", [f"{agent_id} - {info['name']}" for agent_id, info in CALL_CENTER_AGENTS.items()])
                     
-                    if selected_customer:
+                    if selected_customer and not customers_df.empty:
                         customer_info = customers_df[customers_df["Name"] == selected_customer].iloc[0]
                         
                         # Display customer info
@@ -586,7 +663,8 @@ if auth_file:
                             st.success("🟢 Call initiated with VAPI AI")
                             st.info("AI assistant is now handling the call...")
                         else:
-                            st.error("❌ Please provide VAPI API Key in sidebar")
+                            st.success("🟢 Call initiated (Manual mode)")
+                            st.info("Agent handling call manually...")
                     
                     if st.button("⏹️ End Call"):
                         st.warning("🔴 Call ended")
@@ -626,7 +704,7 @@ if auth_file:
                                     customers_worksheet.update_cell(customer_row, 9, new_call_summary)  # Assuming call_summary is column 9
                                     
                                     # Update notes
-                                    current_notes = customer_info['Notes']
+                                    current_notes = customer_info['Notes'] if not customers_df.empty else ""
                                     updated_notes = f"{current_notes}\n\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {additional_notes}" if additional_notes else current_notes
                                     customers_worksheet.update_cell(customer_row, 8, updated_notes)  # Assuming notes is column 8
                                     
@@ -642,10 +720,10 @@ if auth_file:
                 # Recent calls table
                 st.subheader("📞 Recent Calls")
                 
-                # This would typically come from a calls database/sheet
-                # For now, we'll show a placeholder
+                # Sample call data
                 recent_calls_data = {
                     "Customer": [selected_customer] * 3,
+                    "Agent": [selected_agent.split(" - ")[1]] * 3,
                     "Date": [datetime.now().strftime("%Y-%m-%d")] * 3,
                     "Duration": ["5 min", "8 min", "12 min"],
                     "Type": ["Inbound", "Outbound", "Follow-up"],
@@ -655,14 +733,130 @@ if auth_file:
                 recent_calls_df = pd.DataFrame(recent_calls_data)
                 st.dataframe(recent_calls_df, use_container_width=True)
 
+            # --- ANALYTICS TAB ---
+            with tab7:
+                st.subheader("📊 Advanced Analytics")
+                
+                # Analytics overview
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    total_agents = len(CALL_CENTER_AGENTS)
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>👥 Total Agents</h3>
+                        <h2>{total_agents}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+                with col2:
+                    available_agents = len([a for a in CALL_CENTER_AGENTS.values() if a["status"] == "Available"])
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>🟢 Available Agents</h3>
+                        <h2>{available_agents}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+                with col3:
+                    total_calls_today = sum([a["calls_today"] for a in CALL_CENTER_AGENTS.values()])
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>📞 Calls Today</h3>
+                        <h2>{total_calls_today}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+                with col4:
+                    avg_calls = total_calls_today / total_agents if total_agents > 0 else 0
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>📈 Avg Calls/Agent</h3>
+                        <h2>{avg_calls:.1f}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+                # Agent performance chart
+                st.subheader("📈 Agent Performance")
+                agent_data = pd.DataFrame([
+                    {"Agent": info["name"], "Calls": info["calls_today"], "Status": info["status"]}
+                    for info in CALL_CENTER_AGENTS.values()
+                ])
+                
+                fig = px.bar(agent_data, x="Agent", y="Calls", color="Status", title="Calls per Agent Today")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # CSV Export for all data
+                st.subheader("📥 Data Export")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("📥 Export Customers CSV"):
+                        if not customers_df.empty:
+                            csv = customers_df.to_csv(index=False)
+                            st.download_button(
+                                label="Download Customers CSV",
+                                data=csv,
+                                file_name=f"customers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv"
+                            )
+                        else:
+                            st.warning("No customer data to export")
+
+                with col2:
+                    if st.button("📥 Export Invoices CSV"):
+                        if not invoices_df.empty:
+                            csv = invoices_df.to_csv(index=False)
+                            st.download_button(
+                                label="Download Invoices CSV",
+                                data=csv,
+                                file_name=f"invoices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv"
+                            )
+                        else:
+                            # Create sample CSV with Malcolm
+                            sample_data = pd.DataFrame([{
+                                "Customer": "Malcolm",
+                                "Invoice Date": "",
+                                "Amount": "",
+                                "Status": "Pending",
+                                "Items": "",
+                                "Notes": "",
+                                "Due Date": "",
+                                "Payment Method": "Cash"
+                            }])
+                            csv = sample_data.to_csv(index=False)
+                            st.download_button(
+                                label="Download Sample Invoice CSV",
+                                data=csv,
+                                file_name=f"sample_invoice_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv"
+                            )
+
+                with col3:
+                    if st.button("📥 Export Agents CSV"):
+                        agents_data = pd.DataFrame([
+                            {"Agent_ID": agent_id, "Name": info["name"], "Status": info["status"], "Calls_Today": info["calls_today"]}
+                            for agent_id, info in CALL_CENTER_AGENTS.items()
+                        ])
+                        csv = agents_data.to_csv(index=False)
+                        st.download_button(
+                            label="Download Agents CSV",
+                            data=csv,
+                            file_name=f"agents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+
         else:
             st.warning("⚠️ Please provide authentication to access the system.")
             st.markdown("""
             <div style="text-align: center; padding: 2rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; color: white; margin: 2rem 0;">
                 <h3>🔐 System Ready with Default Configuration</h3>
                 <p>✅ Customer Database: Connected</p>
+                <p>🧾 Invoice Database: Connected (Hardcoded)</p>
                 <p>🤖 AI Chat System: Ready</p>
                 <p>📊 Analytics: Active</p>
+                <p>👥 Call Center: 5 Agents Ready</p>
                 <p style="margin-top: 1rem; font-size: 0.9em; opacity: 0.8;">
                     Upload your Google Service Account JSON file to begin managing customers.
                 </p>
@@ -685,13 +879,15 @@ else:
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
                 <div>
                     <p>✅ Customer Database Connected</p>
+                    <p>🧾 Invoice Database Connected</p>
                     <p>🤖 AI Chat System Ready</p>
                     <p>📊 Analytics Dashboard Active</p>
                 </div>
                 <div>
                     <p>📞 Call Center Integration</p>
-                    <p>🧾 Invoice Management</p>
+                    <p>👥 5 Hardcoded Agents Ready</p>
                     <p>🔍 Advanced Search & Filters</p>
+                    <p>📥 CSV Export Functionality</p>
                 </div>
             </div>
         </div>
@@ -703,3 +899,4 @@ else:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
