@@ -28,7 +28,7 @@ urllib3>=2.0.0
 vapi_python>=0.1.0
 
 # PDF Generation and Processing
-WeasyPrint>=60.0
+WeasyPrint
 reportlab>=4.0.0
 
 # Date and Time Handling
