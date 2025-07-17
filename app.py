@@ -196,6 +196,29 @@ def logout_user():
             del st.session_state[key]
     st.session_state.logged_in = False
 
+# --- DATA TYPE HANDLING ---
+def fix_dataframe_types(df):
+    """Fix PyArrow data type conversion issues for phone numbers and ID columns"""
+    if df.empty:
+        return df
+    
+    # List of columns that should be treated as strings to avoid PyArrow conversion errors
+    string_columns = [
+        'Phone Number', 'Phone', 'phone', 'phone_number',
+        'Customer ID', 'customer_id', 'ID', 'id',
+        'Order ID', 'order_id', 'Invoice Number', 'invoice_number',
+        'Account Number', 'account_number', 'Reference', 'reference',
+        'Zip Code', 'zip_code', 'Postal Code', 'postal_code'
+    ]
+    
+    # Convert matching columns to string type
+    for col in df.columns:
+        if any(string_col.lower() in col.lower() for string_col in string_columns):
+            # Handle null values first, then convert to string
+            df[col] = df[col].fillna('').astype(str)
+    
+    return df
+
 # --- CALL CENTER FUNCTIONS ---
 def create_vapi_caller_script():
     script_content = '''
@@ -548,6 +571,7 @@ else:
                     customers_data = customers_worksheet.get_all_records()
                     customers_df = pd.DataFrame(customers_data)
                     if not customers_df.empty:
+                        customers_df = fix_dataframe_types(customers_df)  # Fix data types
                         st.sidebar.success(f"✅ Loaded {len(customers_df)} customers")
                 except Exception as e:
                     st.sidebar.error(f"❌ Error loading customers: {str(e)}")
@@ -560,6 +584,7 @@ else:
                     invoices_data = invoices_worksheet.get_all_records()
                     invoices_df = pd.DataFrame(invoices_data)
                     if not invoices_df.empty:
+                        invoices_df = fix_dataframe_types(invoices_df)  # Fix data types
                         st.sidebar.success(f"✅ Loaded {len(invoices_df)} invoices")
                 except Exception as e:
                     st.sidebar.warning(f"⚠️ Invoices sheet not accessible: {str(e)}")
@@ -571,6 +596,7 @@ else:
                 price_data = price_worksheet.get_all_records()
                 price_list_df = pd.DataFrame(price_data)
                 if not price_list_df.empty:
+                    price_list_df = fix_dataframe_types(price_list_df)  # Fix data types
                     st.sidebar.success(f"✅ Loaded {len(price_list_df)} price items")
             except Exception as e:
                 st.sidebar.warning(f"⚠️ Price list not accessible: {str(e)}")
@@ -582,6 +608,7 @@ else:
                     {"Service Category": "Alterations", "Item": "Hem Adjustment", "Price (USD)": 12.00, "Turnaround Time": "48 hours", "Notes": "Basic alterations"},
                     {"Service Category": "Special", "Item": "Express Service", "Price (USD)": 35.00, "Turnaround Time": "30 minutes", "Notes": "Rush service available"}
                 ])
+                price_list_df = fix_dataframe_types(price_list_df)  # Fix data types for sample data too
             
             # --- DASHBOARD TAB ---
             with tab1:
@@ -723,6 +750,9 @@ else:
                     
                     display_df = display_df.sort_values(sort_by, ascending=(sort_order == "Ascending"))
                     
+                    # Ensure data types are correct before displaying
+                    display_df = fix_dataframe_types(display_df)
+                    
                     # Interactive table
                     gb = GridOptionsBuilder.from_dataframe(display_df)
                     gb.configure_pagination(paginationAutoPageSize=True)
@@ -786,7 +816,9 @@ else:
                 
                 # Display invoices
                 if not invoices_df.empty:
-                    st.dataframe(invoices_df, use_container_width=True)
+                    # Ensure data types are correct before displaying
+                    display_invoices_df = fix_dataframe_types(invoices_df.copy())
+                    st.dataframe(display_invoices_df, use_container_width=True)
                 else:
                     st.info("No invoices found. Create your first invoice!")
             
@@ -902,6 +934,8 @@ else:
                         if st.session_state.user_info['role'] == 'Admin':
                             st.markdown("*Admin controls available*")
                         
+                        # Ensure data types are correct before displaying
+                        team_df = fix_dataframe_types(team_df)
                         st.dataframe(team_df, use_container_width=True)
                         
                         # Team stats
