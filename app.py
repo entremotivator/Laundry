@@ -86,22 +86,22 @@ CALL_CENTER_AGENTS = {
 # --- AI AGENTS CONFIGURATION ---
 STATIC_AGENTS = {
     "Customer Support": {
-        "id": "your-support-agent-id",
+        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
         "name": "Customer Support Agent",
         "description": "Resolves product issues, answers questions, and ensures satisfying customer experiences with technical knowledge and empathy."
     },
     "Sales Assistant": {
-        "id": "your-sales-agent-id",
+        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
         "name": "Sales Assistant",
         "description": "Identifies qualified prospects, understands business challenges, and connects them with appropriate sales representatives."
     },
     "Appointment Scheduler": {
-        "id": "your-scheduler-agent-id",
+        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
         "name": "Appointment Scheduler",
         "description": "Efficiently books, confirms, reschedules, or cancels appointments while providing clear service information."
     },
     "Laundry Specialist": {
-        "id": "your-laundry-agent-id",
+        "id": "4fe7083e-2f28-4502-b6bf-4ae6ea71a8f4",
         "name": "Laundry Specialist",
         "description": "Expert in laundry services, pricing, and scheduling. Handles customer inquiries about cleaning services and special requests."
     }
