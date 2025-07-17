@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="🧼 Auto Laundry CRM Pro", 
+    page_title="🧼 Lil J's Auto Laundry", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -78,7 +78,7 @@ def generate_pdf_report_with_weasyprint(html_content, filename):
         </head>
         <body>
             <div class="header">
-                <h1>🧼 Auto Laundry CRM Report</h1>
+                <h1>🧼 Lil J's Auto Laundry </h1>
                 <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
             </div>
             <div class="content">
@@ -466,7 +466,7 @@ initialize_vapi_session_state()
 
 # --- LOGIN PAGE ---
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🧼 lil J's Auto Laundry </div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     
