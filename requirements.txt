@@ -2,6 +2,6 @@ streamlit>=1.35.0
 pandas>=2.2.0
 gspread>=5.11.0
 google-auth>=2.29.0
-st-aggrid>=0.3.6
+streamlit-aggrid
 requests>=2.31.0
 plotly>=5.21.0
