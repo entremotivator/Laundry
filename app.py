@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 import weasyprint
+from vapi_python import Vapi
 import gspread
 from google.oauth2.service_account import Credentials
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
@@ -18,809 +19,319 @@ import threading
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import os
-import queue
-import logging
-from typing import Dict, List, Optional, Tuple, Any
-import re
-import uuid
-from dataclasses import dataclass, asdict
-from enum import Enum
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Configure audio environment for headless operation
-os.environ.update({
-    'PULSE_RUNTIME_PATH': '/tmp/pulse',
-    'ALSA_CARD': 'Dummy',
-    'SDL_AUDIODRIVER': 'dummy',
-    'PULSE_RUNTIME_PATH': '/tmp/pulse-runtime',
-    'ALSA_CARD': 'null',
-    'PULSE_RUNTIME_PATH': '/dev/null'
-})
-
-# Import VAPI with comprehensive error handling
-try:
-    from vapi_python import Vapi
-    VAPI_AVAILABLE = True
-    logger.info("VAPI Python library loaded successfully")
-except ImportError as e:
-    logger.warning(f"VAPI Python library not available: {e}")
-    VAPI_AVAILABLE = False
-except Exception as e:
-    logger.error(f"Unexpected error loading VAPI: {e}")
-    VAPI_AVAILABLE = False
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="🧼 Auto Laundry CRM Pro - Complete VAPI Integration",
+    page_title="🧼 Auto Laundry CRM Pro", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- ENUMS AND DATA CLASSES ---
-class CallStatus(Enum):
-    IDLE = "idle"
-    STARTING = "starting"
-    ACTIVE = "active"
-    ENDING = "ending"
-    ENDED = "ended"
-    ERROR = "error"
+# --- UTILITY FUNCTIONS USING ALL LIBRARIES ---
+def calculate_analytics_with_numpy(data):
+    """Use numpy for advanced analytics calculations"""
+    if not data:
+        return {}
+    
+    values = np.array([float(item.get('amount', 0)) for item in data])
+    return {
+        'mean': np.mean(values),
+        'std': np.std(values),
+        'median': np.median(values),
+        'total': np.sum(values),
+        'percentile_75': np.percentile(values, 75),
+        'percentile_25': np.percentile(values, 25)
+    }
 
-class CallType(Enum):
-    OUTBOUND = "outbound"
-    INBOUND = "inbound"
+def fetch_external_data_with_requests(url=None):
+    """Use requests library for external API calls"""
+    try:
+        # Example API call (can be customized)
+        if not url:
+            url = "https://api.exchangerate-api.com/v4/latest/USD"
+        
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
 
-@dataclass
-class CallRecord:
-    id: str
-    assistant_id: str
-    assistant_name: str
-    phone_number: Optional[str]
-    call_type: CallType
-    status: CallStatus
-    start_time: datetime
-    end_time: Optional[datetime] = None
-    duration: Optional[int] = None
-    cost: Optional[float] = None
-    transcript: Optional[str] = None
-    summary: Optional[str] = None
-    user_id: Optional[str] = None
-    metadata: Optional[Dict] = None
-
-@dataclass
-class PhoneNumber:
-    number: str
-    country_code: str
-    area_code: str
-    local_number: str
-    formatted: str
-    is_valid: bool
-    carrier: Optional[str] = None
-    type: Optional[str] = None  # mobile, landline, voip
-
-# --- PHONE NUMBER UTILITIES ---
-class PhoneNumberValidator:
-    """Advanced phone number validation and formatting"""
-    
-    @staticmethod
-    def parse_phone_number(phone: str) -> PhoneNumber:
-        """Parse and validate phone number"""
-        # Remove all non-digit characters except +
-        cleaned = re.sub(r'[^\d+]', '', phone)
-        
-        # Default values
-        country_code = ""
-        area_code = ""
-        local_number = ""
-        formatted = phone
-        is_valid = False
-        carrier = None
-        phone_type = None
-        
-        try:
-            # Basic US phone number pattern
-            if cleaned.startswith('+1'):
-                # US number with country code
-                digits = cleaned[2:]
-                if len(digits) == 10:
-                    country_code = "+1"
-                    area_code = digits[:3]
-                    local_number = digits[3:]
-                    formatted = f"+1 ({area_code}) {local_number[:3]}-{local_number[3:]}"
-                    is_valid = True
-                    phone_type = "mobile" if area_code in ['917', '646', '347'] else "landline"
-            elif len(cleaned) == 10 and cleaned.isdigit():
-                # US number without country code
-                country_code = "+1"
-                area_code = cleaned[:3]
-                local_number = cleaned[3:]
-                formatted = f"+1 ({area_code}) {local_number[:3]}-{local_number[3:]}"
-                is_valid = True
-                phone_type = "mobile" if area_code in ['917', '646', '347'] else "landline"
-            elif cleaned.startswith('+'):
-                # International number
-                is_valid = len(cleaned) >= 8
-                formatted = cleaned
-                country_code = cleaned[:3] if len(cleaned) > 3 else cleaned
-                phone_type = "international"
-            
-        except Exception as e:
-            logger.error(f"Phone parsing error: {e}")
-        
-        return PhoneNumber(
-            number=cleaned,
-            country_code=country_code,
-            area_code=area_code,
-            local_number=local_number,
-            formatted=formatted,
-            is_valid=is_valid,
-            carrier=carrier,
-            type=phone_type
-        )
-    
-    @staticmethod
-    def format_for_vapi(phone: str) -> str:
-        """Format phone number for VAPI API"""
-        parsed = PhoneNumberValidator.parse_phone_number(phone)
-        if parsed.is_valid:
-            return parsed.number if parsed.number.startswith('+') else f"+1{parsed.number}"
-        return phone
-
-# --- COMPREHENSIVE VAPI MANAGER ---
-class ComprehensiveVAPIManager:
-    """Complete VAPI integration with all phone features"""
-    
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.vapi_client = None
-        self.current_call = None
-        self.call_thread = None
-        self.is_calling = threading.Event()
-        self.stop_monitoring = threading.Event()
-        self.call_logs = queue.Queue(maxsize=200)
-        self.call_history: List[CallRecord] = []
-        self.audio_configured = False
-        self._lock = threading.RLock()
-        self.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="VAPI")
-        self.phone_validator = PhoneNumberValidator()
-        self.call_analytics = {}
-        self.webhook_data = queue.Queue(maxsize=50)
-        
-        # Initialize components
-        self._configure_audio_environment()
-        self._initialize_analytics()
-    
-    def _configure_audio_environment(self) -> Tuple[bool, str]:
-        """Configure audio environment for server deployment"""
-        try:
-            # Comprehensive audio environment setup
-            audio_env = {
-                'SDL_AUDIODRIVER': 'dummy',
-                'PULSE_RUNTIME_PATH': '/tmp/pulse-runtime',
-                'ALSA_CARD': 'Dummy',
-                'PULSE_RUNTIME_PATH': '/dev/null',
-                'ALSA_CARD': 'null',
-                'JACK_NO_AUDIO_RESERVATION': '1',
-                'PULSE_RUNTIME_PATH': '/tmp/nonexistent',
-                'XDG_RUNTIME_DIR': '/tmp'
-            }
-            
-            for key, value in audio_env.items():
-                os.environ[key] = value
-            
-            # Try to suppress PyAudio warnings
-            try:
-                import warnings
-                warnings.filterwarnings("ignore", category=UserWarning, module="pyaudio")
-            except:
-                pass
-            
-            self._add_log("✅ Audio environment configured for server deployment")
-            self.audio_configured = True
-            return True, "Audio environment optimized for server deployment"
-            
-        except Exception as e:
-            error_msg = f"Audio configuration: {e}"
-            self._add_log(f"⚠️ {error_msg}")
-            self.audio_configured = True  # Continue anyway
-            return True, "Audio configured (server-side processing)"
-    
-    def _initialize_analytics(self):
-        """Initialize call analytics tracking"""
-        self.call_analytics = {
-            'total_calls': 0,
-            'successful_calls': 0,
-            'failed_calls': 0,
-            'total_duration': 0,
-            'total_cost': 0.0,
-            'average_duration': 0,
-            'calls_by_status': {},
-            'calls_by_assistant': {},
-            'calls_by_hour': {},
-            'phone_numbers_called': set()
-        }
-    
-    def _add_log(self, message: str, level: str = "INFO"):
-        """Thread-safe log addition with levels"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        log_entry = f"[{level}] {timestamp}: {message}"
-        
-        try:
-            self.call_logs.put_nowait(log_entry)
-        except queue.Full:
-            try:
-                self.call_logs.get_nowait()
-                self.call_logs.put_nowait(log_entry)
-            except queue.Empty:
-                pass
-        
-        # Also log to Python logger
-        if level == "ERROR":
-            logger.error(message)
-        elif level == "WARN":
-            logger.warning(message)
-        else:
-            logger.info(message)
-    
-    def initialize_client(self) -> Tuple[bool, str]:
-        """Initialize VAPI client with comprehensive error handling"""
-        with self._lock:
-            try:
-                if not VAPI_AVAILABLE:
-                    return False, "VAPI Python library not available. Install with: pip install vapi-python"
-                
-                if not self.audio_configured:
-                    self._configure_audio_environment()
-                
-                # Initialize VAPI client with error suppression
-                try:
-                    self.vapi_client = Vapi(api_key=self.api_key)
-                    self._add_log("🚀 VAPI client initialized successfully")
-                    return True, "VAPI client ready for calls"
-                except Exception as init_error:
-                    # Handle specific initialization errors
-                    if "audio" in str(init_error).lower():
-                        self._add_log("⚠️ Audio initialization warning (expected in server environments)")
-                        # Try to initialize without audio
-                        self.vapi_client = Vapi(api_key=self.api_key)
-                        self._add_log("✅ VAPI client initialized (server-side audio)")
-                        return True, "VAPI client ready (server-side audio processing)"
-                    else:
-                        raise init_error
-                
-            except Exception as e:
-                error_msg = f"Failed to initialize VAPI client: {str(e)}"
-                self._add_log(error_msg, "ERROR")
-                return False, error_msg
-    
-    def validate_phone_number(self, phone: str) -> Tuple[bool, str, PhoneNumber]:
-        """Validate phone number for calling"""
-        try:
-            parsed = self.phone_validator.parse_phone_number(phone)
-            
-            if not parsed.is_valid:
-                return False, "Invalid phone number format", parsed
-            
-            # Additional VAPI-specific validation
-            vapi_formatted = self.phone_validator.format_for_vapi(phone)
-            
-            if len(vapi_formatted) < 8:
-                return False, "Phone number too short", parsed
-            
-            if not vapi_formatted.startswith('+'):
-                return False, "Phone number must include country code", parsed
-            
-            return True, f"Valid phone number: {parsed.formatted}", parsed
-            
-        except Exception as e:
-            return False, f"Phone validation error: {e}", PhoneNumber("", "", "", "", phone, False)
-    
-    def create_assistant_override(self, user_name: str = None, context: str = None, 
-                                phone_number: str = None) -> Dict:
-        """Create assistant override configuration"""
-        overrides = {}
-        
-        if user_name or context or phone_number:
-            overrides["variableValues"] = {}
-            
-            if user_name:
-                overrides["variableValues"]["customerName"] = user_name
-                overrides["variableValues"]["name"] = user_name
-            
-            if phone_number:
-                parsed = self.phone_validator.parse_phone_number(phone_number)
-                overrides["variableValues"]["phoneNumber"] = parsed.formatted
-                overrides["variableValues"]["customerPhone"] = parsed.formatted
-            
-            if context:
-                overrides["context"] = context
-                overrides["variableValues"]["additionalContext"] = context
-        
-        # Add system context
-        overrides["systemMessage"] = f"""
-        You are calling on behalf of Auto Laundry CRM Pro. 
-        Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        System: Professional laundry and dry cleaning service
-        Be helpful, professional, and concise.
+def generate_pdf_report_with_weasyprint(html_content, filename):
+    """Use WeasyPrint to generate PDF reports"""
+    try:
+        # Create a simple HTML template
+        html_template = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>CRM Report</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 40px; }}
+                h1 {{ color: #2E86AB; }}
+                .header {{ border-bottom: 2px solid #2E86AB; padding-bottom: 10px; }}
+                .content {{ margin-top: 20px; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                th {{ background-color: #f2f2f2; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>🧼 Auto Laundry CRM Report</h1>
+                <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </div>
+            <div class="content">
+                {html_content}
+            </div>
+        </body>
+        </html>
         """
         
-        return overrides
-    
-    def start_call(self, assistant_id: str, assistant_name: str = "AI Assistant",
-                   phone_number: str = None, user_name: str = None, 
-                   context: str = None, call_type: CallType = CallType.OUTBOUND) -> Tuple[bool, str]:
-        """Start a comprehensive VAPI call"""
-        with self._lock:
-            try:
-                if self.is_calling.is_set():
-                    return False, "A call is already in progress. Please end the current call first."
-                
-                # Initialize client if needed
-                if not self.vapi_client:
-                    success, msg = self.initialize_client()
-                    if not success:
-                        return False, msg
-                
-                # Validate phone number if provided
-                if phone_number:
-                    is_valid, validation_msg, parsed_phone = self.validate_phone_number(phone_number)
-                    if not is_valid:
-                        return False, f"Phone validation failed: {validation_msg}"
-                    
-                    formatted_phone = self.phone_validator.format_for_vapi(phone_number)
-                    self._add_log(f"📞 Validated phone: {parsed_phone.formatted}")
-                else:
-                    formatted_phone = None
-                
-                # Create call parameters
-                call_params = {
-                    "assistant_id": assistant_id
-                }
-                
-                # Add assistant overrides
-                overrides = self.create_assistant_override(user_name, context, phone_number)
-                if overrides:
-                    call_params["assistant_overrides"] = overrides
-                
-                # Add phone number for outbound calls
-                if formatted_phone and call_type == CallType.OUTBOUND:
-                    call_params["customer"] = {"number": formatted_phone}
-                
-                self._add_log(f"🚀 Starting {call_type.value} call with assistant {assistant_name}")
-                
-                # Start the call with comprehensive error handling
-                try:
-                    self.current_call = self.vapi_client.start(**call_params)
-                    call_id = getattr(self.current_call, 'id', str(uuid.uuid4()))
-                    
-                    self.is_calling.set()
-                    self.stop_monitoring.clear()
-                    
-                    # Create call record
-                    call_record = CallRecord(
-                        id=call_id,
-                        assistant_id=assistant_id,
-                        assistant_name=assistant_name,
-                        phone_number=formatted_phone,
-                        call_type=call_type,
-                        status=CallStatus.ACTIVE,
-                        start_time=datetime.now(),
-                        user_id=user_name,
-                        metadata={
-                            "context": context,
-                            "overrides": overrides,
-                            "audio_mode": "server-side"
-                        }
-                    )
-                    
-                    self.call_history.append(call_record)
-                    self._update_analytics('call_started', call_record)
-                    
-                    # Start monitoring
-                    self.call_thread = self.executor.submit(self._monitor_call, call_record)
-                    
-                    success_msg = f"✅ Call started successfully!\n📞 Call ID: {call_id}\n🎯 Assistant: {assistant_name}"
-                    if formatted_phone:
-                        success_msg += f"\n📱 Calling: {parsed_phone.formatted}"
-                    
-                    self._add_log(success_msg)
-                    return True, success_msg
-                    
-                except Exception as call_error:
-                    self.is_calling.clear()
-                    error_msg = self._format_call_error(str(call_error))
-                    self._add_log(error_msg, "ERROR")
-                    return False, error_msg
-                
-            except Exception as e:
-                self.is_calling.clear()
-                error_msg = f"Call initialization failed: {str(e)}"
-                self._add_log(error_msg, "ERROR")
-                return False, error_msg
-    
-    def stop_call(self, reason: str = "User requested") -> Tuple[bool, str]:
-        """Stop current call with detailed logging"""
-        with self._lock:
-            try:
-                if not self.is_calling.is_set():
-                    return False, "No active call to stop"
-                
-                # Signal monitoring to stop
-                self.stop_monitoring.set()
-                
-                # Stop the call
-                if self.vapi_client and self.current_call:
-                    try:
-                        self.vapi_client.stop()
-                        self._add_log(f"📴 Call stopped: {reason}")
-                    except Exception as stop_error:
-                        self._add_log(f"⚠️ Stop call warning: {stop_error}", "WARN")
-                
-                # Update call record
-                if self.call_history:
-                    last_call = self.call_history[-1]
-                    last_call.status = CallStatus.ENDED
-                    last_call.end_time = datetime.now()
-                    if last_call.start_time:
-                        duration = (last_call.end_time - last_call.start_time).total_seconds()
-                        last_call.duration = int(duration)
-                    
-                    self._update_analytics('call_ended', last_call)
-                
-                self.is_calling.clear()
-                self.current_call = None
-                
-                return True, f"✅ Call ended successfully. Reason: {reason}"
-                
-            except Exception as e:
-                self.is_calling.clear()
-                self.current_call = None
-                error_msg = f"Error stopping call: {str(e)}"
-                self._add_log(error_msg, "ERROR")
-                return False, error_msg
-    
-    def _monitor_call(self, call_record: CallRecord):
-        """Enhanced call monitoring with detailed status tracking"""
-        try:
-            monitor_count = 0
-            while self.is_calling.is_set() and not self.stop_monitoring.is_set():
-                monitor_count += 1
-                
-                # Periodic status updates
-                if monitor_count % 6 == 0:  # Every minute (10s * 6)
-                    duration = int((datetime.now() - call_record.start_time).total_seconds())
-                    self._add_log(f"📞 Call active - Duration: {duration}s - ID: {call_record.id}")
-                
-                # Check for call completion (you could add VAPI status checks here)
-                if hasattr(self.current_call, 'status'):
-                    call_status = getattr(self.current_call, 'status', None)
-                    if call_status and call_status in ['ended', 'completed', 'failed']:
-                        self._add_log(f"📋 Call status changed to: {call_status}")
-                        break
-                
-                # Wait with early exit on stop signal
-                if self.stop_monitoring.wait(timeout=10):
-                    break
-                    
-        except Exception as e:
-            self._add_log(f"Monitor error: {str(e)}", "ERROR")
-        finally:
-            # Ensure call is marked as ended
-            if self.is_calling.is_set():
-                self.is_calling.clear()
-                if self.call_history:
-                    last_call = self.call_history[-1]
-                    if last_call.status == CallStatus.ACTIVE:
-                        last_call.status = CallStatus.ENDED
-                        last_call.end_time = datetime.now()
-                        if last_call.start_time:
-                            duration = (last_call.end_time - last_call.start_time).total_seconds()
-                            last_call.duration = int(duration)
-                        self._update_analytics('call_ended', last_call)
-    
-    def _update_analytics(self, event: str, call_record: CallRecord):
-        """Update call analytics"""
-        try:
-            if event == 'call_started':
-                self.call_analytics['total_calls'] += 1
-                
-                # Track by assistant
-                assistant_name = call_record.assistant_name
-                if assistant_name not in self.call_analytics['calls_by_assistant']:
-                    self.call_analytics['calls_by_assistant'][assistant_name] = 0
-                self.call_analytics['calls_by_assistant'][assistant_name] += 1
-                
-                # Track by hour
-                hour = call_record.start_time.hour
-                if hour not in self.call_analytics['calls_by_hour']:
-                    self.call_analytics['calls_by_hour'][hour] = 0
-                self.call_analytics['calls_by_hour'][hour] += 1
-                
-                # Track phone numbers
-                if call_record.phone_number:
-                    self.call_analytics['phone_numbers_called'].add(call_record.phone_number)
-            
-            elif event == 'call_ended':
-                if call_record.status == CallStatus.ENDED:
-                    self.call_analytics['successful_calls'] += 1
-                else:
-                    self.call_analytics['failed_calls'] += 1
-                
-                # Update duration stats
-                if call_record.duration:
-                    self.call_analytics['total_duration'] += call_record.duration
-                    total_calls = self.call_analytics['successful_calls'] + self.call_analytics['failed_calls']
-                    if total_calls > 0:
-                        self.call_analytics['average_duration'] = self.call_analytics['total_duration'] / total_calls
-                
-                # Track by status
-                status = call_record.status.value
-                if status not in self.call_analytics['calls_by_status']:
-                    self.call_analytics['calls_by_status'][status] = 0
-                self.call_analytics['calls_by_status'][status] += 1
-                
-        except Exception as e:
-            self._add_log(f"Analytics update error: {e}", "ERROR")
-    
-    def _format_call_error(self, error: str) -> str:
-        """Format call errors with helpful context"""
-        error_lower = error.lower()
-        
-        if "audio" in error_lower or "device" in error_lower:
-            return """🔊 Audio Device Notice: This is expected in server environments.
-            
-✅ VAPI handles all audio processing server-side
-✅ No local audio devices required
-✅ Calls will work normally
-            
-The call should proceed successfully despite this message."""
-        
-        elif "pyaudio" in error_lower:
-            return """🎵 PyAudio Notice: Audio library warning (normal in cloud deployment)
-            
-✅ VAPI manages audio on their servers
-✅ Your calls will work perfectly
-✅ This is not an error - just a system notice"""
-        
-        elif "invalid" in error_lower and "phone" in error_lower:
-            return f"📱 Phone Number Error: {error}\n\n💡 Try formatting as: +1234567890 or (123) 456-7890"
-        
-        elif "api" in error_lower or "key" in error_lower:
-            return f"🔑 API Error: {error}\n\n💡 Check your VAPI API key in Streamlit secrets"
-        
-        elif "assistant" in error_lower:
-            return f"🤖 Assistant Error: {error}\n\n💡 Verify the Assistant ID exists in your VAPI dashboard"
-        
-        else:
-            return f"⚠️ Call Error: {error}"
-    
-    def get_call_status(self) -> Dict[str, Any]:
-        """Get comprehensive call status"""
-        with self._lock:
-            # Get logs
-            logs = []
-            temp_logs = []
-            
-            while not self.call_logs.empty():
-                try:
-                    log = self.call_logs.get_nowait()
-                    temp_logs.append(log)
-                    logs.append(log)
-                except queue.Empty:
-                    break
-            
-            # Put logs back
-            for log in temp_logs:
-                try:
-                    self.call_logs.put_nowait(log)
-                except queue.Full:
-                    break
-            
-            # Current call info
-            current_call_info = None
-            if self.is_calling.is_set() and self.call_history:
-                last_call = self.call_history[-1]
-                current_call_info = {
-                    'id': last_call.id,
-                    'assistant_name': last_call.assistant_name,
-                    'phone_number': last_call.phone_number,
-                    'start_time': last_call.start_time.strftime('%H:%M:%S'),
-                    'duration': int((datetime.now() - last_call.start_time).total_seconds()) if last_call.start_time else 0
-                }
-            
-            return {
-                'is_calling': self.is_calling.is_set(),
-                'current_call': current_call_info,
-                'logs': logs[-30:],  # Last 30 log entries
-                'history': [asdict(call) for call in self.call_history[-20:]],  # Last 20 calls
-                'analytics': self.call_analytics.copy(),
-                'audio_configured': self.audio_configured,
-                'vapi_available': VAPI_AVAILABLE,
-                'total_calls_today': len([c for c in self.call_history if c.start_time.date() == datetime.now().date()]),
-                'active_duration': int((datetime.now() - self.call_history[-1].start_time).total_seconds()) if self.call_history and self.is_calling.is_set() else 0
-            }
-    
-    def get_call_history_df(self) -> pd.DataFrame:
-        """Get call history as DataFrame for analysis"""
-        if not self.call_history:
-            return pd.DataFrame()
-        
-        try:
-            data = []
-            for call in self.call_history:
-                data.append({
-                    'Call ID': call.id[:8] + '...',
-                    'Assistant': call.assistant_name,
-                    'Phone Number': call.phone_number or 'N/A',
-                    'Type': call.call_type.value.title(),
-                    'Status': call.status.value.title(),
-                    'Start Time': call.start_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'Duration (s)': call.duration or 0,
-                    'User': call.user_id or 'Unknown'
-                })
-            
-            return pd.DataFrame(data)
-        except Exception as e:
-            self._add_log(f"DataFrame creation error: {e}", "ERROR")
-            return pd.DataFrame()
-    
-    def clear_logs(self):
-        """Clear call logs"""
-        with self._lock:
-            while not self.call_logs.empty():
-                try:
-                    self.call_logs.get_nowait()
-                except queue.Empty:
-                    break
-            self._add_log("🧹 Logs cleared")
-    
-    def clear_history(self):
-        """Clear call history"""
-        with self._lock:
-            self.call_history.clear()
-            self._initialize_analytics()
-            self._add_log("🗑️ Call history cleared")
-    
-    def export_call_data(self) -> Dict:
-        """Export all call data"""
-        return {
-            'call_history': [asdict(call) for call in self.call_history],
-            'analytics': self.call_analytics,
-            'export_time': datetime.now().isoformat(),
-            'total_calls': len(self.call_history),
-            'vapi_available': VAPI_AVAILABLE
-        }
-    
-    def cleanup(self):
-        """Comprehensive cleanup"""
-        with self._lock:
-            self.stop_monitoring.set()
-            if self.is_calling.is_set():
-                self.stop_call("System cleanup")
-            self.executor.shutdown(wait=True)
-            self._add_log("🧹 VAPI Manager cleaned up")
+        # Generate PDF using WeasyPrint
+        pdf_path = f"/tmp/{filename}.pdf"
+        weasyprint.HTML(string=html_template).write_pdf(pdf_path)
+        return pdf_path
+    except Exception as e:
+        return f"Error generating PDF: {str(e)}"
 
-# --- ENHANCED SESSION STATE MANAGER ---
-class EnhancedSessionStateManager:
-    """Enhanced thread-safe session state manager"""
+def process_dataframe_with_pandas(data):
+    """Use pandas for advanced data processing"""
+    if not data:
+        return pd.DataFrame()
     
-    def __init__(self):
-        self._lock = threading.RLock()
+    df = pd.DataFrame(data)
     
-    def get(self, key: str, default=None):
-        with self._lock:
-            return st.session_state.get(key, default)
+    # Add calculated columns using pandas
+    if 'amount' in df.columns:
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+        df['amount_category'] = pd.cut(df['amount'], 
+                                     bins=[0, 50, 100, 200, float('inf')], 
+                                     labels=['Low', 'Medium', 'High', 'Premium'])
     
-    def set(self, key: str, value):
-        with self._lock:
-            st.session_state[key] = value
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df['month'] = df['date'].dt.month
+        df['year'] = df['date'].dt.year
+        df['day_of_week'] = df['date'].dt.day_name()
     
-    def update(self, updates: Dict[str, Any]):
-        with self._lock:
-            for key, value in updates.items():
-                st.session_state[key] = value
-    
-    def delete(self, key: str):
-        with self._lock:
-            if key in st.session_state:
-                del st.session_state[key]
-    
-    def exists(self, key: str) -> bool:
-        with self._lock:
-            return key in st.session_state
+    return df
 
-# Initialize session state manager
-session_manager = EnhancedSessionStateManager()
-
-# --- CONSTANTS ---
+# --- DEMO ACCOUNTS ---
 DEMO_ACCOUNTS = {
     "admin": {"password": "admin123", "role": "Admin", "team": "Management", "name": "John Admin"},
     "manager1": {"password": "manager123", "role": "Manager", "team": "Operations", "name": "Sarah Manager"},
     "agent1": {"password": "agent123", "role": "Agent", "team": "Customer Service", "name": "Mike Agent"},
+    "supervisor1": {"password": "super123", "role": "Supervisor", "team": "Quality Control", "name": "Emma Supervisor"},
     "demo": {"password": "demo123", "role": "Demo User", "team": "Demo", "name": "Demo User"}
 }
 
-COMPREHENSIVE_AGENTS = {
-    "Customer Support": {
-        "id": "7b2b8b86-5caa-4f28-8c6b-e7d3d0404f06",
-        "name": "Customer Support Specialist",
-        "description": "Handles customer inquiries, resolves issues, and provides excellent service with empathy and technical knowledge.",
-        "use_cases": ["Product support", "Issue resolution", "General inquiries"],
-        "personality": "Professional, empathetic, solution-focused"
+# --- TEAM STRUCTURE ---
+TEAM_STRUCTURE = {
+    "Management": {
+        "team_lead": "John Admin",
+        "members": [
+            {"name": "John Admin", "role": "Admin", "status": "Active", "login": "admin"},
+            {"name": "Lisa Director", "role": "Director", "status": "Active", "login": "director1"},
+            {"name": "Robert VP", "role": "Vice President", "status": "Active", "login": "vp1"},
+            {"name": "Maria CFO", "role": "CFO", "status": "Active", "login": "cfo1"},
+            {"name": "David CTO", "role": "CTO", "status": "Active", "login": "cto1"}
+        ]
     },
-    "Sales Assistant": {
-        "id": "232f3d9c-18b3-4963-bdd9-e7de3be156ae",
-        "name": "Sales Development Representative",
-        "description": "Identifies qualified prospects, understands business needs, and connects them with appropriate sales representatives.",
-        "use_cases": ["Lead qualification", "Product demos", "Sales follow-up"],
-        "personality": "Enthusiastic, persuasive, goal-oriented"
+    "Operations": {
+        "team_lead": "Sarah Manager",
+        "members": [
+            {"name": "Sarah Manager", "role": "Operations Manager", "status": "Active", "login": "manager1"},
+            {"name": "Tom Operator", "role": "Senior Operator", "status": "Active", "login": "op1"},
+            {"name": "Jenny Coordinator", "role": "Coordinator", "status": "Active", "login": "coord1"},
+            {"name": "Paul Scheduler", "role": "Scheduler", "status": "Active", "login": "sched1"},
+            {"name": "Anna Logistics", "role": "Logistics", "status": "Active", "login": "log1"}
+        ]
     },
-    "Laundry Specialist": {
-        "id": "41fe59e1-829f-4936-8ee5-eef2bb1287fe",
-        "name": "Laundry Service Expert",
-        "description": "Expert in laundry services, pricing, scheduling, and special garment care. Handles service bookings and customer questions.",
-        "use_cases": ["Service booking", "Pricing inquiries", "Special care instructions"],
-        "personality": "Knowledgeable, detail-oriented, helpful"
-    },
-    "Appointment Scheduler": {
-        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-        "name": "Appointment Coordinator",
-        "description": "Efficiently books, confirms, reschedules, and cancels appointments while providing clear service information.",
-        "use_cases": ["Appointment booking", "Schedule management", "Confirmation calls"],
-        "personality": "Organized, efficient, accommodating"
-    },
-    "Feedback Collector": {
-        "id": "f1e2d3c4-b5a6-9870-fedc-ba0987654321",
-        "name": "Customer Feedback Specialist",
-        "description": "Conducts surveys, collects customer feedback, and gathers market research with high completion rates.",
-        "use_cases": ["Customer surveys", "Feedback collection", "Market research"],
-        "personality": "Friendly, patient, thorough"
+    "Customer Service": {
+        "team_lead": "Mike Agent",
+        "members": [
+            {"name": "Mike Agent", "role": "Senior Agent", "status": "Active", "login": "agent1"},
+            {"name": "Kelly Support", "role": "Support Agent", "status": "Active", "login": "support1"},
+            {"name": "Chris Helper", "role": "Customer Helper", "status": "Active", "login": "helper1"},
+            {"name": "Nina Assistant", "role": "Assistant", "status": "Active", "login": "assist1"},
+            {"name": "Ryan Specialist", "role": "Specialist", "status": "Active", "login": "spec1"}
+        ]
     }
 }
 
-# --- UTILITY FUNCTIONS ---
-def initialize_session_state():
-    """Initialize session state with comprehensive defaults"""
-    defaults = {
-        'logged_in': False,
-        'user_info': {},
-        'username': '',
-        'vapi_manager': None,
-        'show_agent_details': False,
-        'auto_refresh_calls': True,
-        'call_refresh_interval': 10,
-        'phone_book': [],
-        'recent_calls': [],
-        'favorite_assistants': []
+# --- HARDCODED CREDENTIALS ---
+DEFAULT_CUSTOMERS_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=392374958#gid=392374958"
+DEFAULT_N8N_WEBHOOK = "https://agentonline-u29564.vm.elestio.app/webhook/bf7aec67-cce8-4bd6-81f1-f04f84b992f7"
+HARDCODED_INVOICES_SHEET = "https://docs.google.com/spreadsheets/d/1LZvUQwceVE1dyCjaNod0DPOhHaIGLLBqomCDgxiWuBg/edit?gid=1234567890#gid=1234567890"
+PRICE_LIST_SHEET = "https://docs.google.com/spreadsheets/d/1WeDpcSNnfCrtx4F3bBC9osigPkzy3LXybRO6jpN7BXE/edit?usp=drivesdk"
+
+# --- CALL CENTER AGENTS ---
+CALL_CENTER_AGENTS = {
+    "agent_001": {"name": "Sarah Johnson", "status": "Available", "calls_today": 12, "team": "Customer Service"},
+    "agent_002": {"name": "Mike Chen", "status": "On Call", "calls_today": 8, "team": "Customer Service"},
+    "agent_003": {"name": "Emma Davis", "status": "Break", "calls_today": 15, "team": "Customer Service"},
+    "agent_004": {"name": "Alex Rodriguez", "status": "Available", "calls_today": 10, "team": "Operations"},
+    "agent_005": {"name": "Lisa Thompson", "status": "Training", "calls_today": 3, "team": "Operations"}
+}
+
+# --- AI AGENTS CONFIGURATION ---
+STATIC_AGENTS = {
+    "Customer Support": {
+        "id": "7b2b8b86-5caa-4f28-8c6b-e7d3d0404f06",
+        "name": "Customer Support Agent",
+        "description": "Resolves product issues, answers questions, and ensures satisfying customer experiences with technical knowledge and empathy."
+    },
+    "Sales Assistant": {
+        "id": "232f3d9c-18b3-4963-bdd9-e7de3be156ae",
+        "name": "Sales Assistant",
+        "description": "Identifies qualified prospects, understands business challenges, and connects them with appropriate sales representatives."
+    },
+    "Laundry Specialist": {
+        "id": "41fe59e1-829f-4936-8ee5-eef2bb1287fe",
+        "name": "Laundry Specialist",
+        "description": "Expert in laundry services, pricing, and scheduling. Handles customer inquiries about cleaning services and special requests."
     }
+}
+
+# Define agent type descriptions for call center
+AGENT_TYPES = {
+    "Customer Support Specialist": "Resolves product issues, answers questions, and ensures satisfying customer experiences with technical knowledge and empathy.",
+    "Lead Qualification Specialist": "Identifies qualified prospects, understands business challenges, and connects them with appropriate sales representatives.",
+    "Appointment Scheduler": "Efficiently books, confirms, reschedules, or cancels appointments while providing clear service information.",
+    "Info Collector": "Gathers accurate and complete information from customers while ensuring data quality and regulatory compliance.",
+    "Care Coordinator": "Schedules medical appointments, answers health questions, and coordinates patient services with HIPAA compliance.",
+    "Feedback Gatherer": "Conducts surveys, collects customer feedback, and gathers market research with high completion rates."
+}
+
+# --- VAPI CALL MANAGEMENT ---
+class VAPICallManager:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.vapi_client = None
+        self.current_call = None
+        self.call_thread = None
+        self.is_calling = False
+        self.call_logs = []
+        self.call_history = []
+        
+    def initialize_client(self):
+        """Initialize VAPI client"""
+        try:
+            self.vapi_client = Vapi(api_key=self.api_key)
+            return True, "VAPI client initialized successfully"
+        except Exception as e:
+            return False, f"Failed to initialize VAPI client: {str(e)}"
     
-    for key, default_value in defaults.items():
-        if not session_manager.exists(key):
-            session_manager.set(key, default_value)
-
-def login_user(username, password):
-    if username in DEMO_ACCOUNTS and DEMO_ACCOUNTS[username]["password"] == password:
-        return DEMO_ACCOUNTS[username]
-    return None
-
-def logout_user():
-    vapi_manager = session_manager.get('vapi_manager')
-    if vapi_manager:
-        vapi_manager.cleanup()
+    def start_call(self, assistant_id, overrides=None, phone_number=None):
+        """Start a VAPI call using native features"""
+        try:
+            if self.is_calling:
+                return False, "A call is already in progress"
+            
+            if not self.vapi_client:
+                success, msg = self.initialize_client()
+                if not success:
+                    return False, msg
+            
+            # Prepare call parameters
+            call_params = {
+                "assistant_id": assistant_id
+            }
+            
+            if overrides:
+                call_params["assistant_overrides"] = overrides
+            
+            if phone_number:
+                call_params["customer"] = {"number": phone_number}
+            
+            # Start the call
+            self.current_call = self.vapi_client.start(**call_params)
+            self.is_calling = True
+            
+            # Add to call history
+            call_record = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'assistant_id': assistant_id,
+                'status': 'started',
+                'call_id': getattr(self.current_call, 'id', 'unknown'),
+                'phone_number': phone_number
+            }
+            self.call_history.append(call_record)
+            
+            # Start monitoring thread
+            self.call_thread = threading.Thread(target=self._monitor_call, daemon=True)
+            self.call_thread.start()
+            
+            return True, f"Call started successfully. Call ID: {getattr(self.current_call, 'id', 'unknown')}"
+            
+        except Exception as e:
+            self.is_calling = False
+            error_msg = f"Failed to start call: {str(e)}"
+            self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: ERROR - {error_msg}")
+            return False, error_msg
     
-    keys_to_clear = [key for key in st.session_state.keys() if key.startswith('user_') or key in ['logged_in', 'vapi_manager']]
-    for key in keys_to_clear:
-        session_manager.delete(key)
+    def stop_call(self):
+        """Stop the current VAPI call"""
+        try:
+            if not self.is_calling:
+                return False, "No active call to stop"
+            
+            if self.vapi_client and self.current_call:
+                self.vapi_client.stop()
+                self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: Call stopped by user")
+            
+            self.is_calling = False
+            self.current_call = None
+            
+            # Update call history
+            if self.call_history:
+                self.call_history[-1]['status'] = 'stopped'
+                self.call_history[-1]['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            return True, "Call stopped successfully"
+            
+        except Exception as e:
+            self.is_calling = False
+            self.current_call = None
+            error_msg = f"Error stopping call: {str(e)}"
+            self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: ERROR - {error_msg}")
+            return False, error_msg
     
-    session_manager.set('logged_in', False)
+    def _monitor_call(self):
+        """Monitor call status in background thread"""
+        try:
+            while self.is_calling and self.current_call:
+                # Add periodic status updates
+                self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: Call is active...")
+                time.sleep(10)  # Check every 10 seconds
+                
+                # You can add more sophisticated monitoring here
+                # such as checking call status via VAPI API
+                
+        except Exception as e:
+            self.call_logs.append(f"{datetime.now().strftime('%H:%M:%S')}: Monitor error - {str(e)}")
+        finally:
+            if self.is_calling:
+                self.is_calling = False
+                if self.call_history:
+                    self.call_history[-1]['status'] = 'ended'
+                    self.call_history[-1]['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    def get_call_status(self):
+        """Get current call status"""
+        return {
+            'is_calling': self.is_calling,
+            'call_id': getattr(self.current_call, 'id', None) if self.current_call else None,
+            'logs': self.call_logs[-20:],  # Last 20 log entries
+            'history': self.call_history
+        }
+    
+    def clear_logs(self):
+        """Clear call logs"""
+        self.call_logs = []
 
-# Initialize session state
-initialize_session_state()
-
-# --- ENHANCED CSS ---
+# --- CUSTOM CSS ---
 st.markdown("""
 <style>
     .main-header {
@@ -834,53 +345,6 @@ st.markdown("""
         font-weight: bold;
         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
     }
-    .call-active {
-        background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        color: white;
-        text-align: center;
-        margin: 1rem 0;
-        animation: pulse 2s infinite;
-    }
-    .call-inactive {
-        background: linear-gradient(135deg, #f44336 0%, #da190b 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin: 1rem 0;
-    }
-    .phone-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        color: white;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    }
-    .assistant-card {
-        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        border-left: 5px solid #667eea;
-    }
-    .audio-notice {
-        background: linear-gradient(135deg, #ffeaa7 0%, #fab1a0 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        color: #2d3436;
-        margin: 1rem 0;
-        text-align: center;
-        border-left: 5px solid #fdcb6e;
-    }
-    @keyframes pulse {
-        0% { transform: scale(1); }
-        50% { transform: scale(1.05); }
-        100% { transform: scale(1); }
-    }
     .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 1.5rem;
@@ -890,21 +354,127 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0,0,0,0.2);
         text-align: center;
     }
+    .login-container {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        color: white;
+        text-align: center;
+        margin: 2rem 0;
+    }
+    .team-card {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        margin: 1rem 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        border-left: 5px solid #667eea;
+    }
+    .price-card {
+        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        margin: 1rem 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        border-left: 5px solid #a8edea;
+    }
+    .user-info {
+        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        text-align: center;
+        color: #333;
+    }
+    .call-status-active {
+        background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .call-status-inactive {
+        background: linear-gradient(135deg, #f44336 0%, #da190b 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .agent-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        margin: 1rem 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAIN APPLICATION ---
-if not session_manager.get('logged_in'):
-    # LOGIN PAGE
-    st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro - Complete VAPI Integration</div>', unsafe_allow_html=True)
+# --- LOGIN SYSTEM ---
+def login_user(username, password):
+    if username in DEMO_ACCOUNTS and DEMO_ACCOUNTS[username]["password"] == password:
+        return DEMO_ACCOUNTS[username]
+    return None
+
+def logout_user():
+    for key in list(st.session_state.keys()):
+        if key.startswith('user_'):
+            del st.session_state[key]
+    st.session_state.logged_in = False
+
+# --- DATA TYPE HANDLING ---
+def fix_dataframe_types(df):
+    """Fix PyArrow data type conversion issues for phone numbers and ID columns"""
+    if df.empty:
+        return df
+    
+    # List of columns that should be treated as strings to avoid PyArrow conversion errors
+    string_columns = [
+        'Phone Number', 'Phone', 'phone', 'phone_number',
+        'Customer ID', 'customer_id', 'ID', 'id',
+        'Order ID', 'order_id', 'Invoice Number', 'invoice_number',
+        'Account Number', 'account_number', 'Reference', 'reference',
+        'Zip Code', 'zip_code', 'Postal Code', 'postal_code'
+    ]
+    
+    # Convert matching columns to string type
+    for col in df.columns:
+        if any(string_col.lower() in col.lower() for string_col in string_columns):
+            # Handle null values first, then convert to string
+            df[col] = df[col].fillna('').astype(str)
+    
+    return df
+
+# --- INITIALIZE SESSION STATE ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_info' not in st.session_state:
+    st.session_state.user_info = {}
+
+# Initialize VAPI call manager
+def initialize_vapi_session_state():
+    if "vapi_manager" not in st.session_state:
+        st.session_state.vapi_manager = None
+    if "show_descriptions" not in st.session_state:
+        st.session_state.show_descriptions = False
+
+# Initialize VAPI session state
+initialize_vapi_session_state()
+
+# --- LOGIN PAGE ---
+if not st.session_state.logged_in:
+    st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
         st.markdown("""
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 15px; color: white; text-align: center; margin: 2rem 0;">
-            <h2>🔐 Login to Enhanced CRM System</h2>
-            <p>Complete VAPI integration with phone validation and comprehensive call management</p>
+        <div class="login-container">
+            <h2>🔐 Login to CRM System</h2>
+            <p>Enter your credentials to access the system</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -916,17 +486,15 @@ if not session_manager.get('logged_in'):
             if login_button:
                 user_info = login_user(username, password)
                 if user_info:
-                    session_manager.update({
-                        'logged_in': True,
-                        'user_info': user_info,
-                        'username': username
-                    })
+                    st.session_state.logged_in = True
+                    st.session_state.user_info = user_info
+                    st.session_state.username = username
                     st.success(f"✅ Welcome {user_info['name']}!")
                     st.rerun()
                 else:
                     st.error("❌ Invalid credentials!")
         
-        # Demo accounts
+        # Demo accounts info
         st.markdown("---")
         st.subheader("🎯 Demo Accounts")
         
@@ -955,20 +523,19 @@ if not session_manager.get('logged_in'):
             """)
 
 else:
-    # MAIN APPLICATION
-    user_info = session_manager.get('user_info')
+    # --- MAIN APPLICATION ---
     
-    # Header
+    # --- HEADER WITH USER INFO ---
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro - Complete VAPI</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
     
     with col2:
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%); padding: 1rem; border-radius: 10px; margin: 1rem 0; text-align: center; color: #333;">
-            <strong>👤 {user_info['name']}</strong><br>
-            <small>{user_info['role']} | {user_info['team']}</small>
+        <div class="user-info">
+            <strong>👤 {st.session_state.user_info['name']}</strong><br>
+            <small>{st.session_state.user_info['role']} | {st.session_state.user_info['team']}</small>
         </div>
         """, unsafe_allow_html=True)
     
@@ -977,622 +544,967 @@ else:
             logout_user()
             st.rerun()
     
-    # Initialize VAPI manager
-    if not session_manager.get('vapi_manager'):
-        try:
-            api_key = st.secrets.get("VAPI_API_KEY")
-            if api_key:
-                vapi_manager = ComprehensiveVAPIManager(api_key)
-                session_manager.set('vapi_manager', vapi_manager)
-                st.success("🚀 VAPI Manager initialized successfully!")
-            else:
-                st.error("❌ VAPI_API_KEY not found in secrets")
-        except Exception as e:
-            st.error(f"❌ Failed to initialize VAPI: {e}")
+    # --- SIDEBAR AUTH JSON UPLOAD ---
+    st.sidebar.markdown('<div class="sidebar-header">🔐 Authentication</div>', unsafe_allow_html=True)
+    auth_file = st.sidebar.file_uploader("Upload service_account.json", type="json")
     
-    vapi_manager = session_manager.get('vapi_manager')
+    # --- SIDEBAR USER INFO ---
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**Current User:** {st.session_state.user_info['name']}")
+    st.sidebar.markdown(f"**Role:** {st.session_state.user_info['role']}")
+    st.sidebar.markdown(f"**Team:** {st.session_state.user_info['team']}")
     
-    # Sidebar
+    # --- SIDEBAR CALL STATUS ---
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### 📞 Call Center Status")
     
-    if vapi_manager:
-        status = vapi_manager.get_call_status()
-        
-        if status['is_calling']:
-            st.sidebar.markdown("🟢 **CALL ACTIVE**")
-            if status['current_call']:
-                st.sidebar.write(f"📱 {status['current_call']['phone_number'] or 'No phone'}")
-                st.sidebar.write(f"🤖 {status['current_call']['assistant_name']}")
-                st.sidebar.write(f"⏱️ {status['current_call']['duration']}s")
-        else:
-            st.sidebar.markdown("🔴 **No Active Call**")
-        
-        st.sidebar.write(f"📊 Total Calls: {status['analytics']['total_calls']}")
-        st.sidebar.write(f"✅ Successful: {status['analytics']['successful_calls']}")
-        st.sidebar.write(f"📞 Today: {status['total_calls_today']}")
+    if st.session_state.vapi_manager:
+        status = st.session_state.vapi_manager.get_call_status()
+        st.sidebar.write(f"**Call Active:** {'✅ Yes' if status['is_calling'] else '❌ No'}")
+        st.sidebar.write(f"**Total Calls:** {len(status['history'])}")
+        if status['call_id']:
+            st.sidebar.write(f"**Call ID:** {status['call_id']}")
+    else:
+        st.sidebar.write("**VAPI Manager:** Not initialized")
     
-    # Main tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🏠 Dashboard",
-        "📞 Phone & VAPI Center",
-        "📱 Phone Book",
-        "📊 Call Analytics",
-        "⚙️ Settings"
+    # --- TAB LAYOUT ---
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "🏠 Dashboard", 
+        "➕ Add Customer", 
+        "📋 View All",
+        "🧾 Invoices",
+        "💰 Price List",
+        "👥 Team Management",
+        "💬 Super Chat",
+        "📞 Call Center",
+        "📊 Analytics"
     ])
     
-    with tab1:
-        st.subheader("📊 Enhanced CRM Dashboard")
-        st.markdown(f"### Welcome back, {user_info['name']}! 👋")
-        
-        if vapi_manager:
-            status = vapi_manager.get_call_status()
+    if auth_file:
+        try:
+            auth_json = json.load(auth_file)
+            creds = Credentials.from_service_account_info(auth_json, scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ])
+            client = gspread.authorize(creds)
             
-            # Metrics
-            col1, col2, col3, col4 = st.columns(4)
+            # --- SHEET URLS ---
+            use_default_settings = st.sidebar.checkbox("✅ Use Default Settings", value=True)
             
-            with col1:
-                st.markdown(f'''
-                <div class="metric-card">
-                    <h3>📞 Total Calls</h3>
-                    <h2>{status['analytics']['total_calls']}</h2>
-                </div>
-                ''', unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown(f'''
-                <div class="metric-card">
-                    <h3>✅ Successful</h3>
-                    <h2>{status['analytics']['successful_calls']}</h2>
-                </div>
-                ''', unsafe_allow_html=True)
-            
-            with col3:
-                avg_duration = status['analytics']['average_duration']
-                st.markdown(f'''
-                <div class="metric-card">
-                    <h3>⏱️ Avg Duration</h3>
-                    <h2>{avg_duration:.0f}s</h2>
-                </div>
-                ''', unsafe_allow_html=True)
-            
-            with col4:
-                unique_numbers = len(status['analytics']['phone_numbers_called'])
-                st.markdown(f'''
-                <div class="metric-card">
-                    <h3>📱 Unique Numbers</h3>
-                    <h2>{unique_numbers}</h2>
-                </div>
-                ''', unsafe_allow_html=True)
-            
-            # Current call status
-            if status['is_calling'] and status['current_call']:
-                st.markdown(f'''
-                <div class="call-active">
-                    <h2>🟢 CALL IN PROGRESS</h2>
-                    <p><strong>Assistant:</strong> {status['current_call']['assistant_name']}</p>
-                    <p><strong>Phone:</strong> {status['current_call']['phone_number'] or 'No phone number'}</p>
-                    <p><strong>Duration:</strong> {status['current_call']['duration']} seconds</p>
-                    <p><strong>Started:</strong> {status['current_call']['start_time']}</p>
-                </div>
-                ''', unsafe_allow_html=True)
+            if use_default_settings:
+                CUSTOMERS_SHEET_URL = DEFAULT_CUSTOMERS_SHEET
+                N8N_WEBHOOK_URL = DEFAULT_N8N_WEBHOOK
+                INVOICES_SHEET_URL = HARDCODED_INVOICES_SHEET
+                st.sidebar.success("🎯 Using default configuration")
             else:
-                st.markdown('''
-                <div class="call-inactive">
-                    <h3>🔴 No Active Calls</h3>
-                    <p>Ready to start new calls</p>
-                </div>
-                ''', unsafe_allow_html=True)
+                CUSTOMERS_SHEET_URL = st.sidebar.text_input("📄 Customers Google Sheet URL", DEFAULT_CUSTOMERS_SHEET)
+                INVOICES_SHEET_URL = st.sidebar.text_input("🧾 Invoices Google Sheet URL", HARDCODED_INVOICES_SHEET)
+                N8N_WEBHOOK_URL = st.sidebar.text_input("🔗 N8N Webhook URL", DEFAULT_N8N_WEBHOOK)
             
-            # Recent calls
-            if status['history']:
-                st.subheader("📋 Recent Calls")
-                recent_df = vapi_manager.get_call_history_df()
-                if not recent_df.empty:
-                    st.dataframe(recent_df.tail(5), use_container_width=True)
-    
-    with tab2:
-        st.subheader("📞 Complete Phone & VAPI Call Center")
-        
-        if not VAPI_AVAILABLE:
-            st.error("❌ VAPI library not available. Install with: `pip install vapi-python`")
-            st.stop()
-        
-        if not vapi_manager:
-            st.error("❌ VAPI Manager not initialized. Check your API key.")
-            st.stop()
-        
-        # Audio notice
-        st.markdown('''
-        <div class="audio-notice">
-            <h3>🔊 Audio Environment Notice</h3>
-            <p><strong>✅ Server-Side Audio:</strong> All audio processing handled by VAPI servers</p>
-            <p><strong>✅ No Local Devices:</strong> No microphone or speakers needed on your machine</p>
-            <p><strong>✅ Cloud Optimized:</strong> Perfect for Streamlit Cloud deployment</p>
-            <p><strong>ℹ️ Any "audio device" messages are normal and expected in server environments</strong></p>
-        </div>
-        ''', unsafe_allow_html=True)
-        
-        # Call interface
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.subheader("🎯 Make a Call")
+            # --- LOAD DATA ---
+            customers_df = pd.DataFrame()
+            invoices_df = pd.DataFrame()
+            price_list_df = pd.DataFrame()
             
-            # Assistant selection
-            st.markdown("**1. Choose Your AI Assistant**")
-            assistant_options = list(COMPREHENSIVE_AGENTS.keys())
-            selected_assistant_key = st.selectbox(
-                "Select Assistant Type",
-                assistant_options,
-                help="Choose the AI assistant that best fits your call purpose"
-            )
+            # Load customers
+            if CUSTOMERS_SHEET_URL:
+                try:
+                    customers_sheet = client.open_by_url(CUSTOMERS_SHEET_URL)
+                    customers_worksheet = customers_sheet.sheet1
+                    customers_data = customers_worksheet.get_all_records()
+                    customers_df = pd.DataFrame(customers_data)
+                    if not customers_df.empty:
+                        customers_df = fix_dataframe_types(customers_df)  # Fix data types
+                        st.sidebar.success(f"✅ Loaded {len(customers_df)} customers")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Error loading customers: {str(e)}")
             
-            selected_assistant = COMPREHENSIVE_AGENTS[selected_assistant_key]
+            # Load invoices
+            if INVOICES_SHEET_URL:
+                try:
+                    invoices_sheet = client.open_by_url(INVOICES_SHEET_URL)
+                    invoices_worksheet = invoices_sheet.sheet1
+                    invoices_data = invoices_worksheet.get_all_records()
+                    invoices_df = pd.DataFrame(invoices_data)
+                    if not invoices_df.empty:
+                        invoices_df = fix_dataframe_types(invoices_df)  # Fix data types
+                        st.sidebar.success(f"✅ Loaded {len(invoices_df)} invoices")
+                except Exception as e:
+                    st.sidebar.warning(f"⚠️ Invoices sheet not accessible: {str(e)}")
             
-            # Show assistant details
-            if session_manager.get('show_agent_details', False):
-                st.markdown(f'''
-                <div class="assistant-card">
-                    <h4>🤖 {selected_assistant['name']}</h4>
-                    <p><strong>Description:</strong> {selected_assistant['description']}</p>
-                    <p><strong>Best for:</strong> {', '.join(selected_assistant['use_cases'])}</p>
-                    <p><strong>Personality:</strong> {selected_assistant['personality']}</p>
-                </div>
-                ''', unsafe_allow_html=True)
+            # Load price list
+            try:
+                price_sheet = client.open_by_url(PRICE_LIST_SHEET)
+                price_worksheet = price_sheet.sheet1
+                price_data = price_worksheet.get_all_records()
+                price_list_df = pd.DataFrame(price_data)
+                if not price_list_df.empty:
+                    price_list_df = fix_dataframe_types(price_list_df)  # Fix data types
+                    st.sidebar.success(f"✅ Loaded {len(price_list_df)} price items")
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ Price list not accessible: {str(e)}")
+                # Create sample price data
+                price_list_df = pd.DataFrame([
+                    {"Service Category": "Washing", "Item": "Regular Wash", "Price (USD)": 15.00, "Turnaround Time": "2 hours", "Notes": "Standard washing service"},
+                    {"Service Category": "Dry Cleaning", "Item": "Suit Cleaning", "Price (USD)": 25.00, "Turnaround Time": "24 hours", "Notes": "Professional dry cleaning"},
+                    {"Service Category": "Pressing", "Item": "Shirt Press", "Price (USD)": 8.00, "Turnaround Time": "1 hour", "Notes": "Professional pressing"},
+                    {"Service Category": "Alterations", "Item": "Hem Adjustment", "Price (USD)": 12.00, "Turnaround Time": "48 hours", "Notes": "Basic alterations"},
+                    {"Service Category": "Special", "Item": "Express Service", "Price (USD)": 35.00, "Turnaround Time": "30 minutes", "Notes": "Rush service available"}
+                ])
+                price_list_df = fix_dataframe_types(price_list_df)  # Fix data types for sample data too
             
-            # Phone number input with validation
-            st.markdown("**2. Enter Phone Number**")
-            phone_input = st.text_input(
-                "Phone Number",
-                placeholder="+1 (555) 123-4567 or 5551234567",
-                help="Enter phone number with or without country code"
-            )
-            
-            # Real-time phone validation
-            if phone_input:
-                is_valid, validation_msg, parsed_phone = vapi_manager.validate_phone_number(phone_input)
-                if is_valid:
-                    st.success(f"✅ {validation_msg}")
-                    st.info(f"📱 Will call: {parsed_phone.formatted}")
-                else:
-                    st.error(f"❌ {validation_msg}")
-            
-            # Call configuration
-            st.markdown("**3. Call Configuration**")
-            col_a, col_b = st.columns(2)
-            
-            with col_a:
-                caller_name = st.text_input(
-                    "Your Name",
-                    value=user_info['name'],
-                    help="Name to introduce yourself as"
-                )
-            
-            with col_b:
-                call_purpose = st.selectbox(
-                    "Call Purpose",
-                    ["Customer Support", "Sales Inquiry", "Service Booking", "Follow-up", "Survey", "Other"]
-                )
-            
-            additional_context = st.text_area(
-                "Additional Context",
-                placeholder="Any specific information or instructions for the AI assistant...",
-                help="This context will be provided to the AI assistant"
-            )
-            
-            # Call controls
-            st.markdown("**4. Call Controls**")
-            status = vapi_manager.get_call_status()
-            
-            col_x, col_y, col_z = st.columns(3)
-            
-            with col_x:
-                start_disabled = status['is_calling'] or not phone_input or not is_valid
-                if st.button("📞 Start Call", disabled=start_disabled, type="primary", use_container_width=True):
-                    context = f"Call purpose: {call_purpose}. {additional_context}".strip()
-                    
-                    success, message = vapi_manager.start_call(
-                        assistant_id=selected_assistant['id'],
-                        assistant_name=selected_assistant['name'],
-                        phone_number=phone_input,
-                        user_name=caller_name,
-                        context=context,
-                        call_type=CallType.OUTBOUND
-                    )
-                    
-                    if success:
-                        st.success(message)
-                        st.balloons()
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error(message)
-            
-            with col_y:
-                stop_disabled = not status['is_calling']
-                if st.button("⛔ End Call", disabled=stop_disabled, type="secondary", use_container_width=True):
-                    success, message = vapi_manager.stop_call("User ended call")
-                    if success:
-                        st.success(message)
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error(message)
-            
-            with col_z:
-                if st.button("🔄 Refresh Status", use_container_width=True):
-                    st.rerun()
-        
-        with col2:
-            st.subheader("📊 Live Status")
-            
-            status = vapi_manager.get_call_status()
-            
-            # Current call info
-            if status['is_calling'] and status['current_call']:
-                st.markdown(f'''
-                <div class="phone-card">
-                    <h4>📞 Active Call</h4>
-                    <p><strong>Assistant:</strong> {status['current_call']['assistant_name']}</p>
-                    <p><strong>Phone:</strong> {status['current_call']['phone_number']}</p>
-                    <p><strong>Duration:</strong> {status['current_call']['duration']}s</p>
-                    <p><strong>Call ID:</strong> {status['current_call']['id'][:8]}...</p>
-                </div>
-                ''', unsafe_allow_html=True)
-            else:
-                st.info("🔴 No active call")
-            
-            # Quick stats
-            st.markdown("**Today's Stats**")
-            st.metric("📞 Calls Today", status['total_calls_today'])
-            st.metric("✅ Success Rate", f"{(status['analytics']['successful_calls'] / max(status['analytics']['total_calls'], 1) * 100):.1f}%")
-            st.metric("⏱️ Avg Duration", f"{status['analytics']['average_duration']:.0f}s")
-            
-            # Quick actions
-            st.markdown("**Quick Actions**")
-            if st.button("🧹 Clear Logs", use_container_width=True):
-                vapi_manager.clear_logs()
-                st.success("Logs cleared!")
-            
-            if st.button("ℹ️ Toggle Assistant Details", use_container_width=True):
-                current = session_manager.get('show_agent_details', False)
-                session_manager.set('show_agent_details', not current)
-                st.rerun()
-        
-        # Live logs
-        st.subheader("📝 Live Call Logs")
-        
-        tab_logs, tab_history = st.tabs(["Live Logs", "Call History"])
-        
-        with tab_logs:
-            status = vapi_manager.get_call_status()
-            if status['logs']:
-                # Show logs in reverse order (newest first)
-                for log in reversed(status['logs'][-15:]):
-                    if "[ERROR]" in log:
-                        st.error(log)
-                    elif "[WARN]" in log:
-                        st.warning(log)
-                    else:
-                        st.info(log)
-            else:
-                st.info("No logs available")
-        
-        with tab_history:
-            call_df = vapi_manager.get_call_history_df()
-            if not call_df.empty:
-                st.dataframe(call_df, use_container_width=True)
-            else:
-                st.info("No call history available")
-        
-        # Auto-refresh for active calls
-        if status['is_calling'] and session_manager.get('auto_refresh_calls', True):
-            time.sleep(session_manager.get('call_refresh_interval', 10))
-            st.rerun()
-    
-    with tab3:
-        st.subheader("📱 Phone Book Management")
-        
-        # Phone book functionality
-        phone_book = session_manager.get('phone_book', [])
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.markdown("**Add New Contact**")
-            with st.form("add_contact"):
-                contact_name = st.text_input("Name")
-                contact_phone = st.text_input("Phone Number")
-                contact_type = st.selectbox("Type", ["Customer", "Lead", "Partner", "Other"])
-                contact_notes = st.text_area("Notes")
+            # --- DASHBOARD TAB ---
+            with tab1:
+                st.subheader("📊 CRM Dashboard")
                 
-                if st.form_submit_button("➕ Add Contact"):
-                    if contact_name and contact_phone:
-                        is_valid, msg, parsed = vapi_manager.validate_phone_number(contact_phone)
-                        if is_valid:
-                            new_contact = {
-                                'id': str(uuid.uuid4()),
-                                'name': contact_name,
-                                'phone': parsed.formatted,
-                                'type': contact_type,
-                                'notes': contact_notes,
-                                'added_date': datetime.now().isoformat(),
-                                'added_by': user_info['name']
-                            }
-                            phone_book.append(new_contact)
-                            session_manager.set('phone_book', phone_book)
-                            st.success(f"✅ Added {contact_name}")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {msg}")
-                    else:
-                        st.error("❌ Name and phone required")
-        
-        with col2:
-            st.markdown("**Phone Book**")
-            if phone_book:
-                for contact in phone_book:
-                    with st.expander(f"📞 {contact['name']} - {contact['phone']}"):
-                        col_a, col_b, col_c = st.columns([2, 1, 1])
-                        
-                        with col_a:
-                            st.write(f"**Type:** {contact['type']}")
-                            st.write(f"**Notes:** {contact['notes']}")
-                            st.write(f"**Added:** {contact['added_date'][:10]}")
-                        
-                        with col_b:
-                            if st.button(f"📞 Call", key=f"call_{contact['id']}"):
-                                # Pre-fill call form
-                                st.session_state['prefill_phone'] = contact['phone']
-                                st.session_state['prefill_name'] = contact['name']
-                                st.success(f"Phone number {contact['phone']} ready for calling!")
-                        
-                        with col_c:
-                            if st.button(f"🗑️ Delete", key=f"del_{contact['id']}"):
-                                phone_book = [c for c in phone_book if c['id'] != contact['id']]
-                                session_manager.set('phone_book', phone_book)
-                                st.rerun()
-            else:
-                st.info("📝 No contacts in phone book yet")
-    
-    with tab4:
-        st.subheader("📊 Comprehensive Call Analytics")
-        
-        if vapi_manager:
-            status = vapi_manager.get_call_status()
-            analytics = status['analytics']
-            
-            # Overview metrics
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("📞 Total Calls", analytics['total_calls'])
-            with col2:
-                st.metric("✅ Successful", analytics['successful_calls'])
-            with col3:
-                st.metric("❌ Failed", analytics['failed_calls'])
-            with col4:
-                success_rate = (analytics['successful_calls'] / max(analytics['total_calls'], 1)) * 100
-                st.metric("📈 Success Rate", f"{success_rate:.1f}%")
-            
-            # Charts
-            if analytics['total_calls'] > 0:
-                col1, col2 = st.columns(2)
+                # User-specific greeting
+                st.markdown(f"### Welcome back, {st.session_state.user_info['name']}! 👋")
+                
+                # --- METRICS ROW ---
+                col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
-                    # Calls by status
-                    if analytics['calls_by_status']:
-                        fig = px.pie(
-                            values=list(analytics['calls_by_status'].values()),
-                            names=list(analytics['calls_by_status'].keys()),
-                            title="📊 Calls by Status"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>👥 Total Customers</h3>
+                        <h2>{len(customers_df)}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
                 
                 with col2:
-                    # Calls by assistant
-                    if analytics['calls_by_assistant']:
-                        fig = px.bar(
-                            x=list(analytics['calls_by_assistant'].keys()),
-                            y=list(analytics['calls_by_assistant'].values()),
-                            title="🤖 Calls by Assistant"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                    team_members = sum(len(team["members"]) for team in TEAM_STRUCTURE.values())
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>👨‍💼 Team Members</h3>
+                        <h2>{team_members}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
                 
-                # Calls by hour
-                if analytics['calls_by_hour']:
-                    st.subheader("⏰ Calls by Hour of Day")
-                    fig = px.bar(
-                        x=list(analytics['calls_by_hour'].keys()),
-                        y=list(analytics['calls_by_hour'].values()),
-                        title="📈 Call Volume by Hour"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                with col3:
+                    invoice_count = len(invoices_df) if not invoices_df.empty else 0
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>🧾 Total Invoices</h3>
+                        <h2>{invoice_count}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
                 
-                # Call history table
-                st.subheader("📋 Detailed Call History")
-                call_df = vapi_manager.get_call_history_df()
-                if not call_df.empty:
-                    st.dataframe(call_df, use_container_width=True)
+                with col4:
+                    total_calls = len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>📞 Total Calls</h3>
+                        <h2>{total_calls}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                # Call status indicator
+                if st.session_state.vapi_manager:
+                    status = st.session_state.vapi_manager.get_call_status()
+                    if status['is_calling']:
+                        st.markdown(f'''
+                        <div class="call-status-active">
+                            <h3>🟢 Call Currently Active</h3>
+                            <p>Call ID: {status['call_id'] or 'Unknown'}</p>
+                        </div>
+                        ''', unsafe_allow_html=True)
+                    else:
+                        st.markdown('''
+                        <div class="call-status-inactive">
+                            <h3>🔴 No Active Calls</h3>
+                            <p>Ready to initiate new calls</p>
+                        </div>
+                        ''', unsafe_allow_html=True)
+                
+                # Team overview for current user
+                st.subheader(f"👥 Your Team: {st.session_state.user_info['team']}")
+                
+                user_team = TEAM_STRUCTURE.get(st.session_state.user_info['team'], {})
+                if user_team:
+                    st.markdown(f"**Team Lead:** {user_team['team_lead']}")
                     
-                    # Export options
+                    team_cols = st.columns(len(user_team['members']))
+                    for idx, member in enumerate(user_team['members']):
+                        with team_cols[idx % len(team_cols)]:
+                            status_emoji = "🟢" if member['status'] == 'Active' else "🔴"
+                            st.markdown(f"""
+                            <div class="team-card" style="font-size: 0.9em;">
+                                <strong>{status_emoji} {member['name']}</strong><br>
+                                <small>{member['role']}</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+            
+            # --- ADD CUSTOMER TAB ---
+            with tab2:
+                st.subheader("➕ Add New Customer")
+                st.markdown(f"*Adding as: {st.session_state.user_info['name']}*")
+                
+                with st.form("add_contact", clear_on_submit=True):
                     col1, col2 = st.columns(2)
+                    
                     with col1:
-                        if st.button("📥 Export Call Data"):
-                            export_data = vapi_manager.export_call_data()
-                            st.download_button(
-                                label="Download Call Data (JSON)",
-                                data=json.dumps(export_data, indent=2, default=str),
-                                file_name=f"call_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                                mime="application/json"
-                            )
+                        name = st.text_input("👤 Name", placeholder="Enter customer name")
+                        email = st.text_input("📧 Email", placeholder="customer@email.com")
+                        phone = st.text_input("📱 Phone Number", placeholder="+1 (555) 123-4567")
+                        preference = st.selectbox("📞 Contact Preference", ["Call", "Text", "Email", "WhatsApp"])
+                        preferred_time = st.text_input("🕑 Preferred Time", placeholder="e.g., 9 AM - 5 PM")
                     
                     with col2:
-                        if st.button("📊 Export CSV"):
-                            csv_data = call_df.to_csv(index=False)
-                            st.download_button(
-                                label="Download CSV",
-                                data=csv_data,
-                                file_name=f"calls_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
-            else:
-                st.info("📊 No call data available yet. Make some calls to see analytics!")
-    
-    with tab5:
-        st.subheader("⚙️ System Settings")
-        
-        # VAPI Settings
-        st.markdown("**🔧 VAPI Configuration**")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Auto-refresh settings
-            auto_refresh = st.checkbox(
-                "🔄 Auto-refresh during calls",
-                value=session_manager.get('auto_refresh_calls', True),
-                help="Automatically refresh the interface during active calls"
-            )
-            session_manager.set('auto_refresh_calls', auto_refresh)
+                        address = st.text_area("📍 Address", placeholder="Enter full address")
+                        items = st.text_area("📦 Items", placeholder="Describe laundry items")
+                        notes = st.text_area("📝 Notes", placeholder="Additional notes")
+                        call_summary = st.text_area("📋 Call Summary", placeholder="Summary of conversation")
+                    
+                    submitted = st.form_submit_button("✅ Add Customer", type="primary")
+                    
+                    if submitted:
+                        if name and phone:
+                            try:
+                                # Add user info to the record
+                                customers_worksheet.append_row([
+                                    name, email, phone, preference, preferred_time,
+                                    address, items, f"{notes} [Added by: {st.session_state.user_info['name']}]", 
+                                    call_summary
+                                ])
+                                st.success("✅ Customer added successfully!")
+                                st.balloons()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error adding customer: {str(e)}")
+                        else:
+                            st.error("❌ Name and Phone Number are required!")
             
-            refresh_interval = st.slider(
-                "⏱️ Refresh interval (seconds)",
-                min_value=5,
-                max_value=30,
-                value=session_manager.get('call_refresh_interval', 10),
-                help="How often to refresh during active calls"
-            )
-            session_manager.set('call_refresh_interval', refresh_interval)
-        
-        with col2:
-            # System info
-            st.markdown("**📊 System Information**")
-            st.write(f"**VAPI Available:** {'✅ Yes' if VAPI_AVAILABLE else '❌ No'}")
-            st.write(f"**Audio Configured:** {'✅ Yes' if vapi_manager and vapi_manager.audio_configured else '❌ No'}")
-            st.write(f"**User:** {user_info['name']} ({user_info['role']})")
-            st.write(f"**Session:** Active")
-        
-        # Data management
-        st.markdown("---")
-        st.markdown("**🗂️ Data Management**")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("🧹 Clear Call Logs", use_container_width=True):
-                if vapi_manager:
-                    vapi_manager.clear_logs()
-                    st.success("✅ Call logs cleared")
-        
-        with col2:
-            if st.button("🗑️ Clear Call History", use_container_width=True):
-                if vapi_manager:
-                    vapi_manager.clear_history()
-                    st.success("✅ Call history cleared")
-        
-        with col3:
-            if st.button("📥 Export All Data", use_container_width=True):
-                if vapi_manager:
-                    export_data = {
-                        "user_info": user_info,
-                        "phone_book": session_manager.get('phone_book', []),
-                        "call_data": vapi_manager.export_call_data(),
-                        "system_info": {
-                            "vapi_available": VAPI_AVAILABLE,
-                            "audio_configured": vapi_manager.audio_configured if vapi_manager else False,
+            # --- VIEW ALL TAB ---
+            with tab3:
+                st.subheader("📋 All Customers")
+                
+                if not customers_df.empty:
+                    # Filter options
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        pref_filter = st.selectbox("Filter by Preference", ["All"] + list(customers_df["Preference"].unique()))
+                    with col2:
+                        sort_by = st.selectbox("Sort by", ["Name", "Phone Number", "Email", "Preferred_Time"])
+                    with col3:
+                        sort_order = st.selectbox("Order", ["Ascending", "Descending"])
+                    
+                    # Apply filters
+                    display_df = customers_df.copy()
+                    if pref_filter != "All":
+                        display_df = display_df[display_df["Preference"] == pref_filter]
+                    
+                    display_df = display_df.sort_values(sort_by, ascending=(sort_order == "Ascending"))
+                    
+                    # Ensure data types are correct before displaying
+                    display_df = fix_dataframe_types(display_df)
+                    
+                    # Interactive table
+                    gb = GridOptionsBuilder.from_dataframe(display_df)
+                    gb.configure_pagination(paginationAutoPageSize=True)
+                    gb.configure_side_bar()
+                    gb.configure_selection('multiple', use_checkbox=True)
+                    gb.configure_default_column(editable=True, groupable=True)
+                    
+                    gridOptions = gb.build()
+                    
+                    AgGrid(
+                        display_df,
+                        gridOptions=gridOptions,
+                        height=500,
+                        width='100%',
+                        theme='alpine',
+                        update_mode=GridUpdateMode.MODEL_CHANGED,
+                        fit_columns_on_grid_load=True
+                    )
+                else:
+                    st.info("No customers found. Add some customers first!")
+            
+            # --- INVOICES TAB ---
+            with tab4:
+                st.subheader("🧾 Invoices Management")
+                
+                # Add new invoice form
+                with st.expander("➕ Add New Invoice"):
+                    with st.form("add_invoice"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            invoice_customer = st.selectbox("👤 Customer", customers_df["Name"].tolist() if not customers_df.empty else ["Sample Customer"])
+                            invoice_date = st.date_input("📅 Invoice Date", datetime.now())
+                            invoice_amount = st.number_input("💰 Amount", min_value=0.0, format="%.2f")
+                            invoice_status = st.selectbox("📊 Status", ["Pending", "Paid", "Overdue", "Cancelled"])
+                        
+                        with col2:
+                            invoice_items = st.text_area("📦 Items", placeholder="List of services/items")
+                            invoice_notes = st.text_area("📝 Notes", placeholder="Additional invoice notes")
+                            due_date = st.date_input("⏰ Due Date", datetime.now() + timedelta(days=30))
+                            payment_method = st.selectbox("💳 Payment Method", ["Cash", "Card", "Bank Transfer", "PayPal"])
+                        
+                        if st.form_submit_button("💾 Create Invoice"):
+                            try:
+                                invoice_data = [
+                                    invoice_customer,
+                                    str(invoice_date),
+                                    invoice_amount,
+                                    invoice_status,
+                                    invoice_items,
+                                    f"{invoice_notes} [Created by: {st.session_state.user_info['name']}]",
+                                    str(due_date),
+                                    payment_method
+                                ]
+                                
+                                invoices_worksheet.append_row(invoice_data)
+                                st.success("✅ Invoice created successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error creating invoice: {e}")
+                
+                # Display invoices
+                if not invoices_df.empty:
+                    # Ensure data types are correct before displaying
+                    display_invoices_df = fix_dataframe_types(invoices_df.copy())
+                    st.dataframe(display_invoices_df, use_container_width=True)
+                else:
+                    st.info("No invoices found. Create your first invoice!")
+            
+            # --- PRICE LIST TAB ---
+            with tab5:
+                st.subheader("💰 Price List Management")
+                
+                # Price list header
+                st.markdown(f"""
+                <div class="price-card">
+                    <h3>📊 Live Price List</h3>
+                    <p>Connected to: <a href="{PRICE_LIST_SHEET}" target="_blank">Google Sheets Price Database</a></p>
+                    <p>Managed by: {st.session_state.user_info['name']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if not price_list_df.empty:
+                    # Price list filters
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        category_filter = st.selectbox("Filter by Category", ["All"] + list(price_list_df["Service Category"].unique()))
+                    
+                    with col2:
+                        price_range = st.slider("Price Range (USD)", 
+                                              min_value=float(price_list_df["Price (USD)"].min()), 
+                                              max_value=float(price_list_df["Price (USD)"].max()),
+                                              value=(float(price_list_df["Price (USD)"].min()), float(price_list_df["Price (USD)"].max())))
+                    
+                    with col3:
+                        if st.button("🔄 Refresh Price List"):
+                            st.rerun()
+                    
+                    # Apply filters
+                    filtered_prices = price_list_df.copy()
+                    if category_filter != "All":
+                        filtered_prices = filtered_prices[filtered_prices["Service Category"] == category_filter]
+                    
+                    filtered_prices = filtered_prices[
+                        (filtered_prices["Price (USD)"] >= price_range[0]) & 
+                        (filtered_prices["Price (USD)"] <= price_range[1])
+                    ]
+                    
+                    # Display price list
+                    st.subheader("📋 Current Prices")
+                    
+                    # Price cards
+                    for idx, row in filtered_prices.iterrows():
+                        col1, col2, col3, col4 = st.columns([2, 2, 1, 3])
+                        
+                        with col1:
+                            st.markdown(f"**{row['Service Category']}**")
+                            st.markdown(f"*{row['Item']}*")
+                        
+                        with col2:
+                            st.markdown(f"**💰 ${row['Price (USD)']}**")
+                        
+                        with col3:
+                            st.markdown(f"**⏱️ {row['Turnaround Time']}**")
+                        
+                        with col4:
+                            st.markdown(f"📝 {row['Notes']}")
+                        
+                        st.markdown("---")
+                    
+                    # Price analytics
+                    st.subheader("📊 Price Analytics")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Price by category
+                        category_avg = filtered_prices.groupby("Service Category")["Price (USD)"].mean().reset_index()
+                        fig = px.bar(category_avg, x="Service Category", y="Price (USD)", 
+                                   title="Average Price by Category")
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        # Price distribution
+                        fig = px.histogram(filtered_prices, x="Price (USD)", 
+                                         title="Price Distribution", nbins=10)
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Export price list
+                    if st.button("📥 Export Price List CSV"):
+                        csv = filtered_prices.to_csv(index=False)
+                        st.download_button(
+                            label="Download Price List CSV",
+                            data=csv,
+                            file_name=f"price_list_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                
+                else:
+                    st.warning("⚠️ Price list not available. Please check the Google Sheets connection.")
+            
+            # --- TEAM MANAGEMENT TAB ---
+            with tab6:
+                st.subheader("👥 Team Management")
+                
+                # Team overview
+                st.markdown(f"**Your Access Level:** {st.session_state.user_info['role']}")
+                
+                # Display all teams
+                for team_name, team_info in TEAM_STRUCTURE.items():
+                    with st.expander(f"🏢 {team_name} Team ({len(team_info['members'])} members)"):
+                        st.markdown(f"**Team Lead:** {team_info['team_lead']}")
+                        
+                        # Team members table
+                        team_df = pd.DataFrame(team_info['members'])
+                        
+                        # Add action buttons for admins
+                        if st.session_state.user_info['role'] == 'Admin':
+                            st.markdown("*Admin controls available*")
+                        
+                        # Ensure data types are correct before displaying
+                        team_df = fix_dataframe_types(team_df)
+                        st.dataframe(team_df, use_container_width=True)
+                        
+                        # Team stats
+                        active_members = len([m for m in team_info['members'] if m['status'] == 'Active'])
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("👥 Total Members", len(team_info['members']))
+                        with col2:
+                            st.metric("✅ Active", active_members)
+                        with col3:
+                            st.metric("📊 Team Load", f"{active_members * 20}%")
+                
+                # Team performance chart
+                st.subheader("📈 Team Performance Overview")
+                
+                team_data = []
+                for team_name, team_info in TEAM_STRUCTURE.items():
+                    active_count = len([m for m in team_info['members'] if m['status'] == 'Active'])
+                    team_data.append({
+                        "Team": team_name,
+                        "Active Members": active_count,
+                        "Total Members": len(team_info['members'])
+                    })
+                
+                team_df = pd.DataFrame(team_data)
+                fig = px.bar(team_df, x="Team", y=["Active Members", "Total Members"], 
+                           title="Team Composition", barmode="group")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # --- SUPER CHAT TAB ---
+            with tab7:
+                st.subheader("💬 Laundry Super Chat")
+                
+                st.markdown(f"""
+                <div class="chat-container">
+                    <h3>🤖 AI Assistant for {st.session_state.user_info['name']}</h3>
+                    <p>Chat with our AI assistant powered by N8N automation</p>
+                    <p><strong>User Context:</strong> {st.session_state.user_info['role']} in {st.session_state.user_info['team']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Chat interface
+                if "messages" not in st.session_state:
+                    st.session_state.messages = []
+                
+                # Display chat messages
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+                
+                # Chat input
+                if prompt := st.chat_input("Type your message here..."):
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+                    
+                    # Send to N8N webhook with user context
+                    if N8N_WEBHOOK_URL:
+                        try:
+                            with st.spinner("🤖 AI is thinking..."):
+                                response = requests.post(
+                                    N8N_WEBHOOK_URL,
+                                    json={
+                                        "message": prompt,
+                                        "user_id": st.session_state.username,
+                                        "user_name": st.session_state.user_info['name'],
+                                        "user_role": st.session_state.user_info['role'],
+                                        "user_team": st.session_state.user_info['team'],
+                                        "timestamp": datetime.now().isoformat(),
+                                        "customer_count": len(customers_df),
+                                        "system": "laundry_crm"
+                                    },
+                                    timeout=30
+                                )
+                                
+                                if response.status_code == 200:
+                                    try:
+                                        response_data = response.json()
+                                        bot_response = response_data.get("response", response_data.get("message", "I'm processing your request..."))
+                                    except:
+                                        bot_response = response.text if response.text else "I'm processing your request..."
+                                else:
+                                    bot_response = "Sorry, I'm having trouble connecting right now. Please try again."
+                        
+                        except Exception as e:
+                            bot_response = f"Connection error: {str(e)}"
+                    else:
+                        bot_response = f"Hello {st.session_state.user_info['name']}! AI chat is ready with your user context."
+                    
+                    st.session_state.messages.append({"role": "assistant", "content": bot_response})
+                    with st.chat_message("assistant"):
+                        st.markdown(bot_response)
+            
+            # --- IMPROVED CALL CENTER TAB ---
+            with tab8:
+                st.subheader("📞 AI Agent Caller - Native VAPI Integration")
+                
+                # Get API key from secrets
+                try:
+                    api_key = st.secrets["VAPI_API_KEY"]
+                    st.success("✅ VAPI API Key loaded from secrets")
+                    
+                    # Initialize VAPI manager if not exists
+                    if not st.session_state.vapi_manager:
+                        st.session_state.vapi_manager = VAPICallManager(api_key)
+                        success, msg = st.session_state.vapi_manager.initialize_client()
+                        if success:
+                            st.success(f"✅ {msg}")
+                        else:
+                            st.error(f"❌ {msg}")
+                    
+                except KeyError:
+                    st.error("❌ VAPI_API_KEY not found in secrets. Please add it to your Streamlit secrets.")
+                    st.info("Add this to your Streamlit app secrets: `VAPI_API_KEY = 'your_api_key_here'`")
+                    api_key = None
+                
+                if api_key and st.session_state.vapi_manager:
+                    # Configuration section
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col2:
+                        # Status information
+                        st.subheader("📊 Status")
+                        status = st.session_state.vapi_manager.get_call_status()
+                        st.write(f"**Call Active:** {'✅ Yes' if status['is_calling'] else '❌ No'}")
+                        st.write(f"**Total Calls:** {len(status['history'])}")
+                        
+                        if status['call_id']:
+                            st.write(f"**Call ID:** {status['call_id']}")
+                    
+                    # Controls
+                    st.subheader("🎛️ Controls")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        if st.button("🔄 Refresh Status"):
+                            st.rerun()
+                    
+                    with col2:
+                        if st.button("🧹 Clear Logs"):
+                            if st.session_state.vapi_manager:
+                                st.session_state.vapi_manager.clear_logs()
+                                st.success("Logs cleared!")
+                    
+                    with col3:
+                        if st.button("ℹ️ Toggle Agent Types"):
+                            st.session_state.show_descriptions = not st.session_state.show_descriptions
+                    
+                    # Show Agent Type Descriptions
+                    if st.session_state.show_descriptions:
+                        st.subheader("📚 Agent Type Descriptions")
+                        for role, desc in AGENT_TYPES.items():
+                            with st.expander(role):
+                                st.write(desc)
+                    
+                    # Agent Setup
+                    st.subheader("🧠 Define Your Assistants")
+                    agent_configs = []
+                    
+                    # Create tabs for better organization
+                    tab_setup, tab_history, tab_logs = st.tabs(["Assistant Setup", "Call History", "Live Logs"])
+                    
+                    with tab_setup:
+                        col1, col2 = st.columns(2)
+                        
+                        for i in range(1, 6):
+                            with col1 if i <= 2 else col2:
+                                with st.expander(f"Assistant {i} Setup", expanded=(i == 1)):
+                                    agent_id = st.text_input(f"Assistant ID", key=f"assistant_id_{i}")
+                                    agent_name = st.text_input(f"Agent Name", key=f"agent_name_{i}")
+                                    agent_type = st.selectbox(
+                                        f"Agent Type", 
+                                        options=[""] + list(AGENT_TYPES.keys()), 
+                                        key=f"agent_type_{i}"
+                                    )
+
+                                    if agent_id and agent_type:
+                                        agent_configs.append({
+                                            "id": agent_id,
+                                            "name": agent_name or f"Agent {i}",
+                                            "type": agent_type
+                                        })
+                    
+                    with tab_history:
+                        st.subheader("📞 Call History")
+                        status = st.session_state.vapi_manager.get_call_status()
+                        if status['history']:
+                            for i, call in enumerate(reversed(status['history'][-10:])):
+                                status_icon = {"started": "🟡", "stopped": "✅", "ended": "🔴"}.get(call['status'], "❓")
+                                st.write(f"{status_icon} **{call['timestamp']}** - {call['assistant_id']} ({call['status']})")
+                                if 'call_id' in call:
+                                    st.caption(f"Call ID: {call['call_id']}")
+                                if 'phone_number' in call and call['phone_number']:
+                                    st.caption(f"Phone: {call['phone_number']}")
+                        else:
+                            st.info("No calls made yet.")
+                    
+                    with tab_logs:
+                        st.subheader("📝 Live Call Logs")
+                        status = st.session_state.vapi_manager.get_call_status()
+                        if status['logs']:
+                            for log in status['logs']:
+                                st.text(log)
+                        else:
+                            st.info("No logs available.")
+                    
+                    # User Info
+                    st.subheader("🙋 Call Configuration")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        user_name = st.text_input("Your Name (for personalized greeting):", placeholder="Enter your name")
+                        phone_number = st.text_input("Phone Number to Call:", placeholder="+1234567890")
+                    with col2:
+                        additional_context = st.text_area("Additional Context:", placeholder="Any specific information for the call")
+                    
+                    # Select Agent to Call
+                    if agent_configs:
+                        st.subheader("📲 Select Assistant")
+                        agent_labels = [f"{a['name']} - {a['type']}" for a in agent_configs]
+                        selected_index = st.selectbox(
+                            "Choose Assistant to Call", 
+                            range(len(agent_configs)), 
+                            format_func=lambda i: agent_labels[i]
+                        )
+                        selected_agent = agent_configs[selected_index]
+                        
+                        # Show selected agent details
+                        with st.expander("Selected Assistant Details", expanded=True):
+                            st.write(f"**Name:** {selected_agent['name']}")
+                            st.write(f"**Type:** {selected_agent['type']}")
+                            st.write(f"**ID:** {selected_agent['id']}")
+                            st.write(f"**Description:** {AGENT_TYPES[selected_agent['type']]}")
+                    else:
+                        selected_agent = None
+                        st.warning("⚠️ Please define at least one assistant above.")
+                    
+                    # Call Controls
+                    st.subheader("📞 Call Controls")
+                    
+                    if selected_agent:
+                        status = st.session_state.vapi_manager.get_call_status()
+                        
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            start_disabled = status['is_calling']
+                            if st.button("▶️ Start Call", disabled=start_disabled, use_container_width=True):
+                                overrides = {}
+                                if user_name:
+                                    overrides["variableValues"] = {"name": user_name}
+                                if additional_context:
+                                    overrides["context"] = additional_context
+                                
+                                success, message = st.session_state.vapi_manager.start_call(
+                                    selected_agent["id"], 
+                                    overrides, 
+                                    phone_number if phone_number else None
+                                )
+                                if success:
+                                    st.success(f"📞 {message}")
+                                    st.balloons()
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {message}")
+                        
+                        with col2:
+                            stop_disabled = not status['is_calling']
+                            if st.button("⛔ Stop Call", disabled=stop_disabled, use_container_width=True):
+                                success, message = st.session_state.vapi_manager.stop_call()
+                                if success:
+                                    st.success(f"📴 {message}")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {message}")
+                        
+                        with col3:
+                            if st.button("🔄 Check Status", use_container_width=True):
+                                status = st.session_state.vapi_manager.get_call_status()
+                                if status['is_calling']:
+                                    st.success(f"✅ Call is active (ID: {status['call_id']})")
+                                else:
+                                    st.info("ℹ️ No active call")
+                        
+                        # Call status indicator
+                        if status['is_calling']:
+                            st.success("🟢 **Call is currently active using native VAPI integration**")
+                            if status['call_id']:
+                                st.info(f"Call ID: {status['call_id']}")
+                        else:
+                            st.info("🔴 **No active call**")
+                    
+                    # Native VAPI Benefits
+                    st.markdown("---")
+                    st.subheader("💡 Native VAPI Integration Benefits")
+                    st.markdown("""
+                    - **🚀 Direct Integration**: Uses vapi_python library directly
+                    - **🔄 Stable Connections**: No subprocess management issues
+                    - **📊 Real-time Monitoring**: Native call status tracking
+                    - **🛡️ Reliable State**: Proper session state management
+                    - **⚡ Better Performance**: Eliminates process overhead
+                    - **🎯 Full VAPI Features**: Access to all native VAPI capabilities
+                    """)
+                
+                # Auto-refresh for live updates (less aggressive)
+                if st.session_state.vapi_manager:
+                    status = st.session_state.vapi_manager.get_call_status()
+                    if status['is_calling']:
+                        time.sleep(5)  # Reduced from 2 seconds to 5 seconds
+                        st.rerun()
+            
+            # --- ANALYTICS TAB ---
+            with tab9:
+                st.subheader("📊 Advanced Analytics")
+                
+                # Analytics overview
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>👥 Total Users</h3>
+                        <h2>{len(DEMO_ACCOUNTS)}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                with col2:
+                    total_team_members = sum(len(team["members"]) for team in TEAM_STRUCTURE.values())
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>👨‍💼 Team Members</h3>
+                        <h2>{total_team_members}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                with col3:
+                    total_ai_calls = len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>🤖 AI Calls</h3>
+                        <h2>{total_ai_calls}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                with col4:
+                    avg_price = price_list_df["Price (USD)"].mean() if not price_list_df.empty else 0
+                    st.markdown(f'''
+                    <div class="metric-card">
+                        <h3>💰 Avg Price</h3>
+                        <h2>${avg_price:.2f}</h2>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                
+                # User activity analytics
+                st.subheader("👤 User Activity")
+                st.markdown(f"**Current Session:** {st.session_state.user_info['name']} ({st.session_state.user_info['role']})")
+                
+                # Call center analytics
+                st.subheader("📞 Call Center Analytics")
+                
+                if st.session_state.vapi_manager:
+                    status = st.session_state.vapi_manager.get_call_status()
+                    if status['history']:
+                        # Advanced call analytics
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Call status distribution
+                            status_counts = {}
+                            for call in status['history']:
+                                call_status = call.get('status', 'unknown')
+                                status_counts[call_status] = status_counts.get(call_status, 0) + 1
+                            
+                            fig = px.pie(
+                                values=list(status_counts.values()),
+                                names=list(status_counts.keys()),
+                                title="Call Status Distribution"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        with col2:
+                            # Calls over time
+                            call_dates = [call['timestamp'][:10] for call in status['history']]
+                            date_counts = {}
+                            for date in call_dates:
+                                date_counts[date] = date_counts.get(date, 0) + 1
+                            
+                            fig = px.bar(
+                                x=list(date_counts.keys()), 
+                                y=list(date_counts.values()),
+                                title="Calls by Date",
+                                labels={'x': 'Date', 'y': 'Number of Calls'}
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                
+                # Team performance analytics
+                st.subheader("📈 Team Performance")
+                
+                team_performance_data = []
+                for team_name, team_info in TEAM_STRUCTURE.items():
+                    active_members = len([m for m in team_info['members'] if m['status'] == 'Active'])
+                    team_performance_data.append({
+                        "Team": team_name,
+                        "Active Members": active_members,
+                        "Performance Score": active_members * 85  # Mock performance score
+                    })
+                
+                team_perf_df = pd.DataFrame(team_performance_data)
+                fig = px.bar(team_perf_df, x="Team", y="Performance Score", 
+                           title="Team Performance Scores")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Export all data
+                st.subheader("📥 Data Export")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("📥 Export All Data"):
+                        # Create comprehensive export
+                        export_data = {
+                            "customers": customers_df.to_dict('records') if not customers_df.empty else [],
+                            "invoices": invoices_df.to_dict('records') if not invoices_df.empty else [],
+                            "price_list": price_list_df.to_dict('records') if not price_list_df.empty else [],
+                            "teams": TEAM_STRUCTURE,
+                            "call_center_agents": CALL_CENTER_AGENTS,
+                            "ai_agents": STATIC_AGENTS,
+                            "call_history": st.session_state.vapi_manager.get_call_status()['history'] if st.session_state.vapi_manager else [],
+                            "exported_by": st.session_state.user_info['name'],
                             "export_time": datetime.now().isoformat()
                         }
-                    }
-                    
-                    st.download_button(
-                        label="Download Complete System Export",
-                        data=json.dumps(export_data, indent=2, default=str),
-                        file_name=f"crm_complete_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                        mime="application/json"
-                    )
+                        
+                        st.download_button(
+                            label="Download Complete Data Export (JSON)",
+                            data=json.dumps(export_data, indent=2),
+                            file_name=f"crm_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
+                        )
+                
+                with col2:
+                    if st.button("📊 Export Analytics Report"):
+                        report_data = {
+                            "report_generated_by": st.session_state.user_info['name'],
+                            "report_date": datetime.now().isoformat(),
+                            "total_customers": len(customers_df),
+                            "total_invoices": len(invoices_df),
+                            "total_team_members": total_team_members,
+                            "total_ai_calls": len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0,
+                            "team_breakdown": team_performance_data,
+                            "call_analytics": {
+                                "active_call": st.session_state.vapi_manager.get_call_status()['is_calling'] if st.session_state.vapi_manager else False,
+                                "total_calls": len(st.session_state.vapi_manager.get_call_status()['history']) if st.session_state.vapi_manager else 0
+                            }
+                        }
+                        
+                        st.download_button(
+                            label="Download Analytics Report (JSON)",
+                            data=json.dumps(report_data, indent=2),
+                            file_name=f"analytics_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
+                        )
+                
+                with col3:
+                    if st.button("📞 Export Call Data"):
+                        call_data = {
+                            "call_history": st.session_state.vapi_manager.get_call_status()['history'] if st.session_state.vapi_manager else [],
+                            "ai_agents": STATIC_AGENTS,
+                            "human_agents": CALL_CENTER_AGENTS,
+                            "current_call_active": st.session_state.vapi_manager.get_call_status()['is_calling'] if st.session_state.vapi_manager else False,
+                            "exported_by": st.session_state.user_info['name'],
+                            "export_time": datetime.now().isoformat()
+                        }
+                        
+                        st.download_button(
+                            label="Download Call Data (JSON)",
+                            data=json.dumps(call_data, indent=2),
+                            file_name=f"call_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json"
+                        )
         
-        # Assistant management
-        st.markdown("---")
-        st.markdown("**🤖 AI Assistant Management**")
-        
-        # Show all available assistants
-        for assistant_key, assistant_info in COMPREHENSIVE_AGENTS.items():
-            with st.expander(f"🤖 {assistant_info['name']}"):
-                col_a, col_b = st.columns([2, 1])
+        except Exception as e:
+            st.error(f"❌ Error loading system: {e}")
+    
+    else:
+        # No auth file uploaded - show system ready message
+        st.markdown("""
+        <div style="text-align: center; padding: 3rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; color: white; margin: 2rem 0;">
+            <h2>🔐 System Ready - Upload Authentication</h2>
+            <p>Welcome {user_name}! Upload your Google Service Account JSON file to access all features.</p>
+            
+            <div style="background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; margin: 1.5rem 0;">
+                <h3>✨ Your Access Level: {user_role}</h3>
+                <p>Team: {user_team}</p>
                 
-                with col_a:
-                    st.write(f"**ID:** `{assistant_info['id']}`")
-                    st.write(f"**Description:** {assistant_info['description']}")
-                    st.write(f"**Use Cases:** {', '.join(assistant_info['use_cases'])}")
-                    st.write(f"**Personality:** {assistant_info['personality']}")
-                
-                with col_b:
-                    # Quick test call button
-                    if st.button(f"🧪 Test Assistant", key=f"test_{assistant_key}"):
-                        st.info(f"Test call feature for {assistant_info['name']} - Add phone number in Phone & VAPI Center tab")
-        
-        # System diagnostics
-        st.markdown("---")
-        st.markdown("**🔍 System Diagnostics**")
-        
-        if st.button("🔍 Run System Check"):
-            with st.spinner("Running system diagnostics..."):
-                diagnostics = {}
-                
-                # Check VAPI availability
-                diagnostics['vapi_library'] = VAPI_AVAILABLE
-                
-                # Check VAPI manager
-                diagnostics['vapi_manager'] = vapi_manager is not None
-                
-                # Check audio configuration
-                if vapi_manager:
-                    diagnostics['audio_configured'] = vapi_manager.audio_configured
-                    diagnostics['client_initialized'] = vapi_manager.vapi_client is not None
-                else:
-                    diagnostics['audio_configured'] = False
-                    diagnostics['client_initialized'] = False
-                
-                # Check API key
-                try:
-                    api_key = st.secrets.get("VAPI_API_KEY")
-                    diagnostics['api_key_present'] = bool(api_key)
-                except:
-                    diagnostics['api_key_present'] = False
-                
-                # Display results
-                st.subheader("🔍 Diagnostic Results")
-                
-                for check, result in diagnostics.items():
-                    status = "✅" if result else "❌"
-                    st.write(f"{status} **{check.replace('_', ' ').title()}:** {result}")
-                
-                # Overall status
-                all_good = all(diagnostics.values())
-                if all_good:
-                    st.success("🎉 All systems operational!")
-                else:
-                    st.warning("⚠️ Some issues detected. Check the results above.")
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                    <div>
+                        <p>✅ Customer Management</p>
+                        <p>🧾 Invoice System</p>
+                        <p>💰 Live Price List</p>
+                        <p>📊 Analytics Dashboard</p>
+                    </div>
+                    <div>
+                        <p>👥 Team Management ({total_members} members)</p>
+                        <p>📞 AI-Powered Call Center</p>
+                        <p>🤖 Advanced AI Chat System</p>
+                        <p>📥 Comprehensive Data Export</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
+                <h4>🚀 New: Native VAPI Integration</h4>
+                <p>✨ Direct vapi_python library integration for stable calls</p>
+                <p>🎯 Improved session state management</p>
+                <p>📊 Real-time call monitoring without subprocess issues</p>
+                <p>🔄 Reliable call management with full VAPI features</p>
+            </div>
+        </div>
+        """.format(
+            user_name=st.session_state.user_info['name'],
+            user_role=st.session_state.user_info['role'],
+            user_team=st.session_state.user_info['team'],
+            total_members=sum(len(team["members"]) for team in TEAM_STRUCTURE.values())
+        ), unsafe_allow_html=True)
 
-# Cleanup on app shutdown
-import atexit
-
-def cleanup_resources():
-    """Cleanup resources on app shutdown"""
-    vapi_manager = session_manager.get('vapi_manager')
-    if vapi_manager:
-        vapi_manager.cleanup()
-
-atexit.register(cleanup_resources)
-
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; padding: 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; color: white; margin: 2rem 0;">
-    <h4>🧼 Auto Laundry CRM Pro - Complete VAPI Integration</h4>
-    <p>✅ Server-side audio processing | 📞 Advanced phone validation | 🤖 Comprehensive AI assistants</p>
-    <p>🔧 Thread-safe operations | 📊 Real-time analytics | 📱 Complete phone book management</p>
-    <small>Powered by VAPI • Streamlit • Advanced Threading</small>
-</div>
-""", unsafe_allow_html=True)
