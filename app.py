@@ -48,7 +48,7 @@ def suppress_audio_errors():
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="🧼 Auto Laundry CRM Pro", 
+    page_title="🧼 Lil J’s Ai Auto Laundry Pro", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -102,7 +102,7 @@ def generate_pdf_report_with_weasyprint(html_content, filename):
         </head>
         <body>
             <div class="header">
-                <h1>🧼 Auto Laundry CRM Report</h1>
+                <h1>🧼 Lil J’s Ai Auto Laundry</h1>
                 <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
             </div>
             <div class="content">
@@ -759,7 +759,7 @@ initialize_ai_phone_system_session_state()
 
 # --- LOGIN PAGE ---
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🧼 Lil J’s Ai Auto Laundry Pro</div>', unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     
@@ -822,7 +822,7 @@ else:
     col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        st.markdown('<div class="main-header">🧼 Auto Laundry CRM Pro</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header">🧼 Lil J’s Ai Auto Laundry Pro</div>', unsafe_allow_html=True)
     
     with col2:
         st.markdown(f"""
@@ -849,7 +849,7 @@ else:
     
     # --- SIDEBAR AI PHONE SYSTEM STATUS ---
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🤖 Audio-Fixed AI System")
+    st.sidebar.markdown("### 🤖 Lil J’s Ai Auto Laundry System")
     
     if st.session_state.ai_phone_system:
         status = st.session_state.ai_phone_system.get_system_status()
@@ -1302,12 +1302,12 @@ else:
             
             # --- SUPER CHAT TAB ---
             with tab7:
-                st.subheader("💬 Laundry Super Chat")
+                st.subheader("💬 Lil J’s Ai Auto Laundry Super Chat")
                 
                 st.markdown(f"""
                 <div class="chat-container">
                     <h3>🤖 AI Assistant for {st.session_state.user_info['name']}</h3>
-                    <p>Chat with our AI assistant powered by N8N automation</p>
+                    <p>Chat with our AI assistant powered by Lil J’s Ai Auto Laundry automation</p>
                     <p><strong>User Context:</strong> {st.session_state.user_info['role']} in {st.session_state.user_info['team']}</p>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1330,7 +1330,7 @@ else:
                     # Send to N8N webhook with user context
                     if N8N_WEBHOOK_URL:
                         try:
-                            with st.spinner("🤖 AI is thinking..."):
+                            with st.spinner("🤖 LILJ AI is thinking..."):
                                 response = requests.post(
                                     N8N_WEBHOOK_URL,
                                     json={
@@ -1366,7 +1366,7 @@ else:
             
             # --- AUDIO-FIXED AI PHONE SYSTEM TAB ---
             with tab8:
-                st.subheader("🤖 Audio-Fixed AI Phone System")
+                st.subheader("🤖 Lil J’s Ai Auto Laundry AI Phone System")
                 
                 # Audio fix notification
                 st.markdown("""
@@ -1758,7 +1758,7 @@ else:
                     # System not initialized
                     st.markdown(f"""
                     <div style="text-align: center; padding: 3rem; background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%); border-radius: 15px; color: white; margin: 2rem 0;">
-                        <h2>🤖 Audio-Fixed AI Phone System</h2>
+                        <h2>🤖 Lil J’s Ai Auto Laundry</h2>
                         <p>Advanced AI-powered calling system with audio error fixes</p>
                         
                         <div style="background: rgba(255,255,255,0.1); padding: 1.5rem; border-radius: 10px; margin: 1.5rem 0;">
@@ -1838,7 +1838,7 @@ else:
                 
                 # Audio-fixed AI phone system analytics
                 if st.session_state.ai_phone_system:
-                    st.subheader("🤖 Audio-Fixed AI System Analytics")
+                    st.subheader("🤖 Lil J’s Ai Auto Laundry System Analytics")
                     status = st.session_state.ai_phone_system.get_system_status()
                     
                     col1, col2 = st.columns(2)
@@ -2011,7 +2011,7 @@ else:
             </div>
             
             <div style="background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
-                <h4>🔧 Audio-Fixed AI Phone System</h4>
+                <h4>🔧 Lil J’s Ai Auto Laundry Phone System</h4>
                 <p><strong>Real Assistant ID:</strong> <code>{REAL_ASSISTANT_ID}</code></p>
                 <p>✅ ALSA Audio Errors Suppressed</p>
                 <p>✅ Rust Panic Errors Handled</p>
